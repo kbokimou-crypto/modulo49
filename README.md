@@ -1,17 +1,17 @@
 # Modulo49
 
-Programme Windows qui modélise la fonction d'évolution d'une suite de nombres compris entre 1 et 49 et prédit le nombre suivant avec la règle MOD 50 (le résultat 0 n'est pas admis).
+Programme Windows qui modélise la fonction d'évolution d'une suite de nombres et prédit le nombre suivant avec la règle **MOD N**, N étant choisi par l'utilisateur (50 par défaut). Les valeurs admises vont de 1 à N-1 ; le résultat 0 n'est pas admis.
 
 ## Utilisation
-1. Lancer **Modulo49**, cliquer sur **Charger un CSV…**.
-2. Les nombres sont lus dans la **colonne A** (une ligne d'en-tête est tolérée ; séparateurs `;` `,` ou tabulation acceptés). Les valeurs hors 1–49 sont signalées et ignorées.
+1. Lancer **Modulo49**, choisir le **Modulo N** en haut de la fenêtre (flèches ou saisie + Entrée), puis cliquer sur **Charger un CSV…**.
+2. Les nombres sont lus dans la **colonne A** (une ligne d'en-tête est tolérée ; séparateurs `;` `,` ou tabulation acceptés). Les lignes non numériques sont signalées et ignorées. Si une valeur dépasse N-1, le programme indique le N minimum à choisir.
 3. Le programme affiche le **prochain nombre prédit**, le tableau des modèles et deux graphiques. La liste des données peut être modifiée à la main, puis **Recalculer**.
 
 ## Méthode
-- **Dépliage** : chaque saut entre deux nombres est ramené dans [-24 ; 25] modulo 50 puis cumulé. Exemple : 42 → 2 est lu comme +10 et non -40. On obtient une courbe continue, la « fonction d'évolution ».
+- **Dépliage** : chaque saut entre deux nombres est ramené modulo N dans ]-N/2 ; N/2] puis cumulé. Exemple avec N = 50 : 42 → 2 est lu comme +10 et non -40. On obtient une courbe continue, la « fonction d'évolution ».
 - **Modèles ajustés** sur cette courbe : régression linéaire, régression quadratique, saut moyen, dernier saut répété, récurrence affine u(n+1) = a·u(n) + b.
 - **Choix du modèle** : chaque modèle est testé pas à pas sur l'historique ; celui dont l'écart moyen avec les valeurs réelles est le plus faible est retenu (★). Cliquer sur une autre ligne du tableau affiche ce modèle sur le graphique.
-- **MOD 50** : la prévision brute est arrondie puis réduite modulo 50. Si le résultat vaut 0, il est remplacé par **1** (valeur suivante du cycle).
+- **MOD N** : la prévision brute est arrondie puis réduite modulo N. Si le résultat vaut 0, il est remplacé par **1** (valeur suivante du cycle). Changer N relance immédiatement tout le calcul.
 
 ## Limite importante
 Pour une suite qui suit une loi (progression, accélération régulière…), la prédiction est exacte. Pour des **tirages aléatoires** (loto, etc.), aucun modèle ne peut prédire le nombre suivant mieux que le hasard : l'écart moyen affiché le montre.

@@ -1,4 +1,4 @@
-"""Modulo49 : modélisation de suites de nombres (1 à 49) et prédiction MOD 50."""
+"""Modulo49 : modélisation de suites de nombres (1 à N-1) et prédiction MOD N, N au choix."""
 
 import os
 import sys
@@ -12,7 +12,7 @@ from matplotlib.figure import Figure
 
 import moteur
 
-TITRE = "Modulo49 – Modélisation et prédiction MOD 50"
+TITRE = "Modulo49 – Modélisation et prédiction MOD N"
 
 
 class Application(tk.Tk):
@@ -30,8 +30,16 @@ class Application(tk.Tk):
         haut = ttk.Frame(self, padding=8)
         haut.pack(fill="x")
         ttk.Button(haut, text="Charger un CSV…", command=self.charger).pack(side="left")
-        ttk.Button(haut, text="Recalculer", command=self.recalculer).pack(side="left", padx=6)
-        self.lbl_fichier = ttk.Label(haut, text="Aucun fichier chargé (les nombres doivent être en colonne A)")
+        ttk.Label(haut, text="Modulo N :").pack(side="left", padx=(12, 2))
+        self.var_n = tk.StringVar(value=str(moteur.MODULO_DEFAUT))
+        champ_n = ttk.Spinbox(haut, from_=moteur.MODULO_MIN, to=moteur.MODULO_MAX, width=7,
+                              textvariable=self.var_n, command=self.recalculer)
+        champ_n.pack(side="left")
+        champ_n.bind("<Return>", lambda e: self.recalculer())
+        self.lbl_intervalle = ttk.Label(haut, text="(valeurs admises : 1 à 49, le 0 devient 1)")
+        self.lbl_intervalle.pack(side="left", padx=(4, 0))
+        ttk.Button(haut, text="Recalculer", command=self.recalculer).pack(side="left", padx=8)
+        self.lbl_fichier = ttk.Label(haut, text="Aucun fichier (nombres en colonne A)")
         self.lbl_fichier.pack(side="left", padx=10)
 
         corps = ttk.PanedWindow(self, orient="horizontal")
@@ -52,7 +60,7 @@ class Application(tk.Tk):
         colonnes = ("modele", "brut", "pred", "erreur")
         self.table = ttk.Treeview(cadre_mod, columns=colonnes, show="headings", height=6)
         for col, titre, larg in zip(colonnes,
-                                    ("Modèle", "Brut", "MOD 50", "Écart"),
+                                    ("Modèle", "Brut", "MOD N", "Écart"),
                                     (200, 65, 55, 55)):
             self.table.heading(col, text=titre)
             self.table.column(col, width=larg, anchor="w" if col == "modele" else "center")
@@ -68,7 +76,7 @@ class Application(tk.Tk):
         self.txt.configure(yscrollcommand=sb.set)
 
         ttk.Label(gauche, wraplength=330, foreground="#777", justify="left",
-                  text="Écart moyen : distance moyenne (sur le cycle 1–49) entre la prédiction "
+                  text="Écart moyen : distance moyenne (sur le cycle 1 à N-1) entre la prédiction "
                        "du modèle et la valeur réellement observée, testée pas à pas sur "
                        "l'historique. Pour des tirages aléatoires, aucun modèle ne fait mieux "
                        "que le hasard.").pack(fill="x", pady=(6, 0))
@@ -104,7 +112,23 @@ class Application(tk.Tk):
             messagebox.showwarning(TITRE, f"{len(avert)} ligne(s) ignorée(s) :\n\n{extrait}")
         self.recalculer()
 
+    def _modulo(self):
+        try:
+            n = moteur.verifier_modulo(self.var_n.get())
+        except ValueError:
+            messagebox.showerror(TITRE, f"Le modulo N doit être un entier entre "
+                                        f"{moteur.MODULO_MIN} et {moteur.MODULO_MAX}.")
+            return None
+        self.lbl_intervalle.config(text=f"(valeurs admises : 1 à {n - 1}, le 0 devient 1)")
+        self.title(f"Modulo49 – Modélisation et prédiction MOD {n}")
+        return n
+
     def recalculer(self):
+        n = self._modulo()
+        if n is None:
+            return
+        if not self.txt.get("1.0", "end").strip():
+            return
         valeurs = []
         for i, ligne in enumerate(self.txt.get("1.0", "end").split(), start=1):
             try:
@@ -112,12 +136,12 @@ class Application(tk.Tk):
             except ValueError:
                 messagebox.showerror(TITRE, f"Valeur {i} invalide : « {ligne} »")
                 return
-            if not 1 <= v <= 49:
-                messagebox.showerror(TITRE, f"Valeur {i} hors intervalle (1 à 49) : {v}")
+            if v < 1:
+                messagebox.showerror(TITRE, f"Valeur {i} invalide : {v} (0 et négatifs non admis)")
                 return
             valeurs.append(v)
         try:
-            self.analyse = moteur.analyser(valeurs)
+            self.analyse = moteur.analyser(valeurs, n)
         except ValueError as e:
             messagebox.showerror(TITRE, str(e))
             return
@@ -133,7 +157,7 @@ class Application(tk.Tk):
         self.lbl_pred.config(text=str(meilleur["prediction"]))
         self.lbl_modele.config(
             text=f"Modèle retenu : {meilleur['nom']}\n"
-                 f"valeur brute {meilleur['prediction_brute']:.2f} → MOD 50 → {meilleur['prediction']}")
+                 f"valeur brute {meilleur['prediction_brute']:.2f} → MOD {n} → {meilleur['prediction']}")
         self.dessiner()
 
     def _modele_selectionne(self):
@@ -149,8 +173,9 @@ class Application(tk.Tk):
         for ax in (self.ax_brut, self.ax_deplie):
             ax.clear()
             ax.grid(alpha=0.3)
-        self.ax_brut.set_title("Suite observée (1 à 49) et prédiction MOD 50")
-        self.ax_brut.set_ylim(0, 50)
+        n = self.analyse["n"] if self.analyse else moteur.MODULO_DEFAUT
+        self.ax_brut.set_title(f"Suite observée (1 à {n - 1}) et prédiction MOD {n}")
+        self.ax_brut.set_ylim(0, n)
         self.ax_deplie.set_title("Fonction d'évolution (suite dépliée) et modèle ajusté")
         self.ax_deplie.set_xlabel("Rang n")
         modele = self._modele_selectionne()
