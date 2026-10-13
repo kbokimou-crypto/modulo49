@@ -19,10 +19,12 @@ class Application(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(TITRE)
-        self.geometry("1100x720")
+        self.geometry("1180x780")
         self.minsize(900, 600)
         self.analyse = None
         self.fichier = None
+        self.cible = None          # résultat de la recherche de la valeur cible
+        self.fenetre_vue = None    # nombre de valeurs (k) surligné sur le graphique
         self._construire()
 
     # ------------------------------------------------------------------ interface
@@ -55,10 +57,12 @@ class Application(tk.Tk):
         self.lbl_modele = ttk.Label(cadre_pred, text="", wraplength=320, justify="center")
         self.lbl_modele.pack()
 
-        cadre_mod = ttk.LabelFrame(gauche, text="Modèles comparés", padding=4)
-        cadre_mod.pack(fill="both", expand=True, pady=8)
+        self.onglets = ttk.Notebook(gauche)
+        self.onglets.pack(fill="both", expand=True, pady=8)
+        cadre_mod = ttk.Frame(self.onglets, padding=4)
+        self.onglets.add(cadre_mod, text="Modèles comparés")
         colonnes = ("modele", "brut", "pred", "erreur")
-        self.table = ttk.Treeview(cadre_mod, columns=colonnes, show="headings", height=6)
+        self.table = ttk.Treeview(cadre_mod, columns=colonnes, show="headings", height=7)
         for col, titre, larg in zip(colonnes,
                                     ("Modèle", "Brut", "MOD N", "Écart"),
                                     (200, 65, 55, 55)):
@@ -67,19 +71,42 @@ class Application(tk.Tk):
         self.table.pack(fill="both", expand=True)
         self.table.bind("<<TreeviewSelect>>", lambda e: self.dessiner())
 
+        cadre_cible = ttk.Frame(self.onglets, padding=4)
+        self.onglets.add(cadre_cible, text="Valeur cible")
+        ligne = ttk.Frame(cadre_cible)
+        ligne.pack(fill="x")
+        ttk.Label(ligne, text="Prédiction future (cible) :").pack(side="left")
+        self.var_cible = tk.StringVar()
+        champ = ttk.Entry(ligne, textvariable=self.var_cible, width=7)
+        champ.pack(side="left", padx=4)
+        champ.bind("<Return>", lambda e: self.verifier_cible())
+        ttk.Button(ligne, text="Vérifier", command=self.verifier_cible).pack(side="left")
+        self.lbl_cible = ttk.Label(cadre_cible, text="Indiquez une valeur cible puis « Vérifier ».",
+                                   wraplength=390, justify="left")
+        self.lbl_cible.pack(fill="x", pady=4)
+        colonnes = ("modele", "confirme", "valeurs", "proche")
+        self.table_cible = ttk.Treeview(cadre_cible, columns=colonnes, show="headings", height=7)
+        for col, titre, larg in zip(colonnes,
+                                    ("Modèle", "Confirme", "Nb valeurs", "Plus proche"),
+                                    (162, 62, 76, 80)):
+            self.table_cible.heading(col, text=titre)
+            self.table_cible.column(col, width=larg, anchor="w" if col == "modele" else "center")
+        self.table_cible.tag_configure("oui", foreground="#1a7f37")
+        self.table_cible.pack(fill="both", expand=True)
+        self.table_cible.bind("<<TreeviewSelect>>", lambda e: self._choisir_ligne_cible())
+
         cadre_saisie = ttk.LabelFrame(gauche, text="Données (modifiables, une valeur par ligne)", padding=4)
         cadre_saisie.pack(fill="both", expand=True)
-        self.txt = tk.Text(cadre_saisie, width=12, height=8)
+        self.txt = tk.Text(cadre_saisie, width=12, height=6)
         self.txt.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(cadre_saisie, command=self.txt.yview)
         sb.pack(side="right", fill="y")
         self.txt.configure(yscrollcommand=sb.set)
 
         ttk.Label(gauche, wraplength=330, foreground="#777", justify="left",
-                  text="Écart moyen : distance moyenne (sur le cycle 1 à N-1) entre la prédiction "
-                       "du modèle et la valeur réellement observée, testée pas à pas sur "
-                       "l'historique. Pour des tirages aléatoires, aucun modèle ne fait mieux "
-                       "que le hasard.").pack(fill="x", pady=(6, 0))
+                  text="Écart : erreur moyenne du modèle testé pas à pas sur l'historique. "
+                       "Sur des tirages aléatoires, aucun modèle ne fait mieux que le hasard."
+                  ).pack(fill="x", pady=(6, 0))
 
         droite = ttk.Frame(corps)
         corps.add(droite, weight=3)
@@ -158,6 +185,65 @@ class Application(tk.Tk):
         self.lbl_modele.config(
             text=f"Modèle retenu : {meilleur['nom']}\n"
                  f"valeur brute {meilleur['prediction_brute']:.2f} → MOD {n} → {meilleur['prediction']}")
+        if self.var_cible.get().strip():
+            self.verifier_cible(silencieux=True)
+        else:
+            self.dessiner()
+
+    def verifier_cible(self, silencieux=False):
+        """Indique quels modèles retrouvent la valeur cible, et avec combien de valeurs."""
+        if not self.analyse:
+            if not silencieux:
+                messagebox.showinfo(TITRE, "Chargez d'abord une suite de nombres.")
+            return
+        n = self.analyse["n"]
+        try:
+            cible = int(self.var_cible.get())
+            resultats = moteur.chercher_cible(self.analyse["valeurs"], cible, n)
+        except ValueError as e:
+            self.cible = None
+            if not silencieux:
+                messagebox.showerror(TITRE, str(e) if "cible" in str(e) else
+                                     f"La valeur cible doit être un entier entre 1 et {n - 1}.")
+            self.dessiner()
+            return
+        self.cible = {"valeur": cible, "resultats": resultats}
+        self.fenetre_vue = None
+        self.table_cible.delete(*self.table_cible.get_children())
+        total = len(self.analyse["valeurs"])
+        for i, r in enumerate(resultats):
+            if r["confirme"]:
+                valeurs = moteur.resumer_fenetres(r["fenetres"])
+                proche = "–"
+            else:
+                ecart, k, pred = r["plus_proche"] if r["plus_proche"] else (None, None, None)
+                valeurs = "aucune"
+                proche = f"{pred} (k={k})" if pred is not None else "–"
+            self.table_cible.insert("", "end", iid=str(i), tags=("oui",) if r["confirme"] else (),
+                                    values=(r["nom"], "oui ✔" if r["confirme"] else "non",
+                                            valeurs, proche))
+        nb = sum(r["confirme"] for r in resultats)
+        self.lbl_cible.config(text=(
+            f"{nb} modèle(s) sur {len(resultats)} confirment la cible {cible}. "
+            f"« Nb de valeurs » = combien des dernières valeurs de la suite (la dernière, "
+            f"{self.analyse['valeurs'][-1]}, toujours incluse ; {total} au total) il faut "
+            f"prendre pour que le modèle prédise {cible}. Cliquez une ligne pour voir la "
+            f"fenêtre sur le graphique."))
+        if not silencieux:
+            self.onglets.select(1)
+        self.dessiner()
+
+    def _choisir_ligne_cible(self):
+        sel = self.table_cible.selection()
+        if not sel or not self.cible:
+            return
+        r = self.cible["resultats"][int(sel[0])]
+        if r["confirme"]:
+            self.fenetre_vue = r["fenetres"][0]
+        elif r["plus_proche"]:
+            self.fenetre_vue = r["plus_proche"][1]
+        else:
+            self.fenetre_vue = None
         self.dessiner()
 
     def _modele_selectionne(self):
@@ -186,7 +272,13 @@ class Application(tk.Tk):
             self.ax_brut.plot(x, vals, "o-", color="#1f5fbf", ms=4, lw=1, label="Observé")
             self.ax_brut.plot([n], [modele["prediction"]], "*", color="#d6402b", ms=16,
                               label=f"Prédit : {modele['prediction']}")
-            self.ax_brut.legend(loc="upper left")
+            if self.cible:
+                self.ax_brut.plot([n], [self.cible["valeur"]], "D", color="#1a7f37", ms=10,
+                                  mfc="none", mew=2, label=f"Cible : {self.cible['valeur']}")
+            if self.fenetre_vue:
+                self.ax_brut.axvspan(n - self.fenetre_vue - 0.3, n - 0.7, color="#1a7f37",
+                                     alpha=0.12, label=f"{self.fenetre_vue} dernières valeurs")
+            self.ax_brut.legend(loc="upper left", fontsize=8)
 
             y = self.analyse["deplie"]
             self.ax_deplie.plot(x, y, "o-", color="#1f5fbf", ms=4, lw=1, label="Dépliée")

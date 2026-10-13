@@ -16,6 +16,7 @@ Le modulo N est au choix (50 par défaut) ; les valeurs admises vont de 1 à N-1
 
 import csv
 import io
+import warnings
 
 import numpy as np
 
@@ -92,13 +93,41 @@ def modele_recurrence(y):
     return ajust, float(a * y[-1] + b)
 
 
+def modele_cubique(y):
+    return _poly(y, 3)
+
+
+def modele_recurrence_ordre2(y):
+    """Récurrence u(n+1) = a*u(n) + b*u(n-1) + c (type Fibonacci généralisé)."""
+    A = np.column_stack([y[1:-1], y[:-2], np.ones(len(y) - 2)])
+    (a, b, c), *_ = np.linalg.lstsq(A, y[2:], rcond=None)
+    ajust = np.full(len(y), np.nan)
+    ajust[2:] = a * y[1:-1] + b * y[:-2] + c
+    return ajust, float(a * y[-1] + b * y[-2] + c)
+
+
+# (nom, fonction, nombre minimum de valeurs)
+# ordre 1 : u(n+1) = a·u(n) + b ; ordre 2 : u(n+1) = a·u(n) + b·u(n-1) + c
 MODELES = [
     ("Régression linéaire", modele_lineaire, 2),
     ("Régression quadratique", modele_quadratique, 3),
+    ("Régression cubique", modele_cubique, 4),
     ("Saut moyen", modele_saut_moyen, 2),
     ("Dernier saut répété", modele_dernier_saut, 2),
-    ("Récurrence u(n+1)=a·u(n)+b", modele_recurrence, 3),
+    ("Récurrence ordre 1", modele_recurrence, 3),
+    ("Récurrence ordre 2", modele_recurrence_ordre2, 5),
 ]
+
+
+def _predire(fonction, valeurs, n):
+    """Prédiction brute d'un modèle sur une suite, ou None si le calcul échoue."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, p = fonction(deplier(valeurs, n))
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    return p if np.isfinite(p) else None
 
 
 def evaluer(fonction, valeurs, minimum, n=MODULO_DEFAUT):
@@ -106,12 +135,8 @@ def evaluer(fonction, valeurs, minimum, n=MODULO_DEFAUT):
     erreurs = []
     debut = max(minimum, 3)
     for k in range(debut, len(valeurs)):
-        y = deplier(valeurs[:k], n)
-        try:
-            _, p = fonction(y)
-        except (np.linalg.LinAlgError, ValueError):
-            continue
-        if np.isfinite(p):
+        p = _predire(fonction, valeurs[:k], n)
+        if p is not None:
             erreurs.append(ecart_circulaire(reduire(p, n), valeurs[k], n))
     return (float(np.mean(erreurs)), len(erreurs)) if erreurs else (float("nan"), 0)
 
@@ -132,7 +157,9 @@ def analyser(valeurs, n=MODULO_DEFAUT):
         if len(valeurs) < minimum:
             continue
         try:
-            ajust, p = fonction(y)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ajust, p = fonction(y)
         except (np.linalg.LinAlgError, ValueError):
             continue
         if not np.isfinite(p):
@@ -151,6 +178,62 @@ def analyser(valeurs, n=MODULO_DEFAUT):
     testes = [r for r in resultats if r["nb_tests"] > 0]
     meilleur = min(testes, key=lambda r: r["erreur"]) if testes else resultats[0]
     return {"valeurs": list(valeurs), "n": n, "deplie": y, "modeles": resultats, "meilleur": meilleur}
+
+
+# --------------------------------------------------------------------------- cible
+def chercher_cible(valeurs, cible, n=MODULO_DEFAUT):
+    """Pour chaque modèle, cherche avec combien de valeurs il prédit la cible.
+
+    On garde toujours la dernière valeur de la suite et on prend les k dernières
+    valeurs (k = taille minimale du modèle ... toute la suite). Pour chaque k, la
+    prédiction MOD N est comparée à la cible.
+    """
+    n = verifier_modulo(n)
+    cible = int(cible)
+    if not 1 <= cible <= n - 1:
+        raise ValueError(f"La valeur cible doit être entre 1 et {n - 1}.")
+    total = len(valeurs)
+    resultats = []
+    for nom, fonction, minimum in MODELES:
+        debut = max(minimum, 3)
+        if total < debut:
+            continue
+        fenetres, plus_proche = [], None
+        for k in range(debut, total + 1):
+            p = _predire(fonction, valeurs[-k:], n)
+            if p is None:
+                continue
+            pred = reduire(p, n)
+            ecart = ecart_circulaire(pred, cible, n)
+            if ecart == 0:
+                fenetres.append(k)
+            if plus_proche is None or ecart < plus_proche[0]:
+                plus_proche = (ecart, k, pred)
+        resultats.append({
+            "nom": nom,
+            "confirme": bool(fenetres),
+            "fenetres": fenetres,
+            "toute_la_suite": total in fenetres,
+            "nb_testees": total - debut + 1,
+            "plus_proche": plus_proche,  # (écart, k, prédiction)
+        })
+    return resultats
+
+
+def resumer_fenetres(fenetres):
+    """[3, 4, 5, 9, 10] -> '3 à 5, 9 à 10'."""
+    plages, debut, prec = [], None, None
+    for k in fenetres:
+        if debut is None:
+            debut = prec = k
+        elif k == prec + 1:
+            prec = k
+        else:
+            plages.append((debut, prec))
+            debut = prec = k
+    if debut is not None:
+        plages.append((debut, prec))
+    return ", ".join(str(a) if a == b else f"{a} à {b}" for a, b in plages)
 
 
 # --------------------------------------------------------------------------- CSV

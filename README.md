@@ -9,9 +9,17 @@ Programme Windows qui modélise la fonction d'évolution d'une suite de nombres 
 
 ## Méthode
 - **Dépliage** : chaque saut entre deux nombres est ramené modulo N dans ]-N/2 ; N/2] puis cumulé. Exemple avec N = 50 : 42 → 2 est lu comme +10 et non -40. On obtient une courbe continue, la « fonction d'évolution ».
-- **Modèles ajustés** sur cette courbe : régression linéaire, régression quadratique, saut moyen, dernier saut répété, récurrence affine u(n+1) = a·u(n) + b.
+- **Modèles ajustés** sur cette courbe : régressions linéaire, quadratique et cubique, saut moyen, dernier saut répété, récurrence d'ordre 1 u(n+1) = a·u(n) + b, récurrence d'ordre 2 u(n+1) = a·u(n) + b·u(n-1) + c.
 - **Choix du modèle** : chaque modèle est testé pas à pas sur l'historique ; celui dont l'écart moyen avec les valeurs réelles est le plus faible est retenu (★). Cliquer sur une autre ligne du tableau affiche ce modèle sur le graphique.
 - **MOD N** : la prévision brute est arrondie puis réduite modulo N. Si le résultat vaut 0, il est remplacé par **1** (valeur suivante du cycle). Changer N relance immédiatement tout le calcul.
+
+## Valeur cible (prédiction future)
+Onglet **Valeur cible** : saisissez le nombre que vous attendez puis **Vérifier**. Pour chaque modèle, le programme indique :
+- **Confirme** : oui si le modèle peut prédire cette cible ;
+- **Nb valeurs** : combien des dernières valeurs de la suite il faut prendre pour que le modèle donne la cible. La dernière valeur est toujours incluse ; on remonte de k valeurs (ex. « 3 à 8 » = avec les 3, 4, … ou 8 dernières valeurs) ;
+- **Plus proche** : si le modèle ne confirme pas, sa prédiction la plus proche de la cible et le k correspondant.
+
+Cliquer sur une ligne surligne la fenêtre de valeurs utilisée sur le graphique. La cible est revérifiée automatiquement quand on change N ou les données.
 
 ## Limite importante
 Pour une suite qui suit une loi (progression, accélération régulière…), la prédiction est exacte. Pour des **tirages aléatoires** (loto, etc.), aucun modèle ne peut prédire le nombre suivant mieux que le hasard : l'écart moyen affiché le montre.
