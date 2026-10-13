@@ -198,12 +198,13 @@ def chercher_cible(valeurs, cible, n=MODULO_DEFAUT):
         debut = max(minimum, 3)
         if total < debut:
             continue
-        fenetres, plus_proche = [], None
+        fenetres, plus_proche, predictions = [], None, {}
         for k in range(debut, total + 1):
             p = _predire(fonction, valeurs[-k:], n)
             if p is None:
                 continue
             pred = reduire(p, n)
+            predictions[k] = pred
             ecart = ecart_circulaire(pred, cible, n)
             if ecart == 0:
                 fenetres.append(k)
@@ -216,8 +217,78 @@ def chercher_cible(valeurs, cible, n=MODULO_DEFAUT):
             "toute_la_suite": total in fenetres,
             "nb_testees": total - debut + 1,
             "plus_proche": plus_proche,  # (écart, k, prédiction)
+            "predictions": predictions,  # {k: prédiction MOD N}
         })
     return resultats
+
+
+def recapituler(resultats, total):
+    """Points communs entre les modèles pour la cible.
+
+    Renvoie, pour chaque nombre de valeurs k, les modèles qui confirment la cible,
+    ainsi que la plage de k où l'accord entre modèles est maximal.
+    """
+    par_k = []
+    for k in range(3, total + 1):
+        modeles = [r["nom"] for r in resultats if k in r["fenetres"]]
+        par_k.append({"k": k, "nb": len(modeles), "modeles": modeles})
+    maxi = max((x["nb"] for x in par_k), default=0)
+    meilleurs_k = [x["k"] for x in par_k if x["nb"] == maxi and maxi > 0]
+    confirmants = [r for r in resultats if r["confirme"]]
+    communs = set.intersection(*(set(r["fenetres"]) for r in confirmants)) if confirmants else set()
+    return {
+        "par_k": par_k,
+        "accord_max": maxi,
+        "k_accord_max": meilleurs_k,
+        "k_communs_a_tous": sorted(communs),
+        "nb_confirmants": len(confirmants),
+    }
+
+
+def exporter_csv(chemin, valeurs, n, cible, resultats):
+    """Exporte le récapitulatif (séparateur ;, lisible directement par Excel)."""
+    total = len(valeurs)
+    recap = recapituler(resultats, total)
+    with open(chemin, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["Récapitulatif Modulo49"])
+        w.writerow(["Modulo N", n])
+        w.writerow(["Valeur cible", cible])
+        w.writerow(["Nombre de valeurs dans la suite", total])
+        w.writerow(["Dernière valeur (toujours incluse)", valeurs[-1]])
+        w.writerow(["Modèles qui confirment", f"{recap['nb_confirmants']} sur {len(resultats)}"])
+        w.writerow(["Accord maximal", f"{recap['accord_max']} modèle(s) pour k = "
+                    + (resumer_fenetres(recap["k_accord_max"]) or "aucun")])
+        w.writerow(["k communs à tous les modèles qui confirment",
+                    resumer_fenetres(recap["k_communs_a_tous"]) or "aucun"])
+        w.writerow([])
+        w.writerow(["Modèle", "Confirme", "Nb de k qui confirment", "k min", "k max",
+                    "Étendue de la plage (k max - k min + 1)", "Plages de k",
+                    "Plus proche (si non)", "k du plus proche"])
+        for r in resultats:
+            f_ = r["fenetres"]
+            proche = r["plus_proche"]
+            w.writerow([r["nom"], "oui" if r["confirme"] else "non", len(f_),
+                        f_[0] if f_ else "", f_[-1] if f_ else "",
+                        f_[-1] - f_[0] + 1 if f_ else "", resumer_fenetres(f_) or "aucune",
+                        "" if r["confirme"] or not proche else proche[2],
+                        "" if r["confirme"] or not proche else proche[1]])
+        w.writerow([])
+        w.writerow(["k (nb de dernières valeurs)", "Rangs utilisés", "Valeurs utilisées",
+                    "Nb de modèles qui confirment", "Modèles"])
+        for x in recap["par_k"]:
+            k = x["k"]
+            w.writerow([k, f"{total - k} à {total - 1}",
+                        " ".join(map(str, valeurs[-k:])) if k <= 30 else
+                        " ".join(map(str, valeurs[-30:])) + " (30 dernières)",
+                        x["nb"], ", ".join(x["modeles"])])
+        w.writerow([])
+        w.writerow(["Prédiction de chaque modèle selon k"])
+        ks = [x["k"] for x in recap["par_k"]]
+        w.writerow(["Modèle"] + [f"k={k}" for k in ks])
+        for r in resultats:
+            w.writerow([r["nom"]] + [r["predictions"].get(k, "") for k in ks])
+    return recap
 
 
 def resumer_fenetres(fenetres):

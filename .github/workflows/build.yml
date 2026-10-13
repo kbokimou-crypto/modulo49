@@ -33,4 +33,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v1.2.${{ github.run_number }}" installateur/Modulo49-Setup.exe --title "Modulo49 v1.2.${{ github.run_number }}" --notes "Installateur Windows de Modulo49." --latest
+        run: gh release create "v1.3.${{ github.run_number }}" installateur/Modulo49-Setup.exe --title "Modulo49 v1.3.${{ github.run_number }}" --notes "Installateur Windows de Modulo49." --latest

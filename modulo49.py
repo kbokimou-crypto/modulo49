@@ -81,6 +81,7 @@ class Application(tk.Tk):
         champ.pack(side="left", padx=4)
         champ.bind("<Return>", lambda e: self.verifier_cible())
         ttk.Button(ligne, text="Vérifier", command=self.verifier_cible).pack(side="left")
+        ttk.Button(ligne, text="Récapitulatif…", command=self.ouvrir_recap).pack(side="left", padx=4)
         self.lbl_cible = ttk.Label(cadre_cible, text="Indiquez une valeur cible puis « Vérifier ».",
                                    wraplength=390, justify="left")
         self.lbl_cible.pack(fill="x", pady=4)
@@ -233,6 +234,13 @@ class Application(tk.Tk):
             self.onglets.select(1)
         self.dessiner()
 
+    def ouvrir_recap(self):
+        if not self.cible:
+            self.verifier_cible()
+        if self.cible:
+            FenetreRecap(self, self.analyse["valeurs"], self.analyse["n"],
+                         self.cible["valeur"], self.cible["resultats"])
+
     def _choisir_ligne_cible(self):
         sel = self.table_cible.selection()
         if not sel or not self.cible:
@@ -290,6 +298,130 @@ class Application(tk.Tk):
             self.ax_deplie.legend(loc="best")
         self.fig.tight_layout()
         self.canvas.draw_idle()
+
+
+class FenetreRecap(tk.Toplevel):
+    """Récapitulatif des points communs entre modèles pour la valeur cible, exportable."""
+
+    VERT, GRIS, ORANGE = "#1a7f37", "#c9cdd2", "#e08a00"
+
+    def __init__(self, parent, valeurs, n, cible, resultats):
+        super().__init__(parent)
+        self.valeurs, self.n, self.cible, self.resultats = valeurs, n, cible, resultats
+        self.total = len(valeurs)
+        self.recap = moteur.recapituler(resultats, self.total)
+        self.title(f"Récapitulatif – cible {cible} (MOD {n})")
+        self.geometry("1080x760")
+        self._construire()
+
+    def _construire(self):
+        rc = self.recap
+        haut = ttk.Frame(self, padding=8)
+        haut.pack(fill="x")
+        accord = (f"{rc['accord_max']} modèle(s) d'accord pour k = "
+                  f"{moteur.resumer_fenetres(rc['k_accord_max'])}" if rc["accord_max"]
+                  else "aucun modèle ne confirme la cible")
+        communs = moteur.resumer_fenetres(rc["k_communs_a_tous"]) or "aucun"
+        ttk.Label(haut, justify="left", text=(
+            f"Cible {self.cible} · {rc['nb_confirmants']} modèle(s) sur {len(self.resultats)} la "
+            f"confirment · {self.total} valeurs, dernière = {self.valeurs[-1]} (toujours incluse)\n"
+            f"Point commun : {accord}. k communs à tous les modèles qui confirment : {communs}."
+        )).pack(anchor="w")
+        boutons = ttk.Frame(haut)
+        boutons.pack(anchor="w", pady=(6, 0))
+        ttk.Button(boutons, text="Exporter le tableau (CSV/Excel)…",
+                   command=self.exporter_tableau).pack(side="left", padx=3)
+        ttk.Button(boutons, text="Exporter le graphique (PNG/PDF)…",
+                   command=self.exporter_graphique).pack(side="left", padx=3)
+
+        colonnes = ("modele", "confirme", "nb", "kmin", "kmax", "etendue", "plages", "proche")
+        table = ttk.Treeview(self, columns=colonnes, show="headings", height=len(self.resultats))
+        titres = ("Modèle", "Confirme", "Nb de k", "k min", "k max", "Étendue", "Plages de k",
+                  "Plus proche")
+        for col, titre, larg in zip(colonnes, titres, (170, 70, 60, 55, 55, 65, 150, 110)):
+            table.heading(col, text=titre)
+            table.column(col, width=larg, anchor="w" if col in ("modele", "plages") else "center")
+        table.tag_configure("oui", foreground=self.VERT)
+        for r in self.resultats:
+            f = r["fenetres"]
+            p = r["plus_proche"]
+            table.insert("", "end", tags=("oui",) if f else (), values=(
+                r["nom"], "oui ✔" if f else "non", len(f),
+                f[0] if f else "–", f[-1] if f else "–", f[-1] - f[0] + 1 if f else "–",
+                moteur.resumer_fenetres(f) or "aucune",
+                "–" if f or not p else f"{p[2]} (k={p[1]})"))
+        table.pack(fill="x", padx=8)
+
+        self.fig = Figure(figsize=(10, 5.6), dpi=100)
+        self._dessiner()
+        canvas = FigureCanvasTkAgg(self.fig, master=self)
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
+        canvas.draw()
+
+    def _dessiner(self):
+        rc = self.recap
+        ks = [x["k"] for x in rc["par_k"]]
+        nbs = [x["nb"] for x in rc["par_k"]]
+        ax1, ax2 = self.fig.subplots(2, 1, sharex=True,
+                                     gridspec_kw={"height_ratios": [1, 1.25]})
+        couleurs = [self.VERT if nb == rc["accord_max"] and nb > 0 else "#7fb08b" for nb in nbs]
+        barres = ax1.bar(ks, nbs, color=couleurs, width=0.75)
+        ax1.bar_label(barres, labels=[str(v) if v else "" for v in nbs], fontsize=8)
+        ax1.set_ylabel("Modèles qui\nconfirment")
+        ax1.set_ylim(0, len(self.resultats) + 0.8)
+        ax1.set_title(f"Accord des modèles sur la cible {self.cible} selon le nombre de "
+                      f"dernières valeurs utilisées (k)")
+        ax1.grid(axis="y", alpha=0.3)
+        ax1.spines[["top", "right"]].set_visible(False)
+
+        noms = [r["nom"] for r in self.resultats]
+        for i, r in enumerate(self.resultats):
+            testes = sorted(r["predictions"])
+            for k in testes:
+                ok = k in r["fenetres"]
+                ax2.barh(i, 0.9, left=k - 0.45, height=0.6,
+                         color=self.VERT if ok else self.GRIS)
+            if r["fenetres"]:
+                f = r["fenetres"]
+                ax2.text(max(testes) + 0.55, i, f"{f[0]}–{f[-1]}", va="center", fontsize=8,
+                         color=self.VERT)
+        for k in rc["k_communs_a_tous"]:
+            ax2.axvspan(k - 0.5, k + 0.5, color=self.ORANGE, alpha=0.12, lw=0)
+        ax2.set_yticks(range(len(noms)), noms, fontsize=8)
+        ax2.invert_yaxis()
+        ax2.set_xlabel("k = nombre de dernières valeurs de la suite (la dernière toujours incluse)")
+        ax2.set_title("Étendue de la plage de k qui donne la cible (vert = confirme ; "
+                      "zone orange = commune à tous)", fontsize=10)
+        ax2.set_xticks(ks)
+        ax2.set_xlim(min(ks) - 0.6, max(ks) + 1.6)
+        ax2.spines[["top", "right"]].set_visible(False)
+        self.fig.tight_layout()
+
+    def exporter_tableau(self):
+        chemin = filedialog.asksaveasfilename(
+            parent=self, title="Exporter le récapitulatif", defaultextension=".csv",
+            initialfile=f"recap_cible_{self.cible}_mod{self.n}.csv",
+            filetypes=[("CSV (Excel)", "*.csv")])
+        if chemin:
+            try:
+                moteur.exporter_csv(chemin, self.valeurs, self.n, self.cible, self.resultats)
+            except OSError as e:
+                messagebox.showerror(TITRE, f"Export impossible :\n{e}", parent=self)
+                return
+            messagebox.showinfo(TITRE, f"Tableau exporté :\n{chemin}", parent=self)
+
+    def exporter_graphique(self):
+        chemin = filedialog.asksaveasfilename(
+            parent=self, title="Exporter le graphique", defaultextension=".png",
+            initialfile=f"recap_cible_{self.cible}_mod{self.n}.png",
+            filetypes=[("Image PNG", "*.png"), ("Document PDF", "*.pdf")])
+        if chemin:
+            try:
+                self.fig.savefig(chemin, dpi=150, bbox_inches="tight")
+            except OSError as e:
+                messagebox.showerror(TITRE, f"Export impossible :\n{e}", parent=self)
+                return
+            messagebox.showinfo(TITRE, f"Graphique exporté :\n{chemin}", parent=self)
 
 
 def main():

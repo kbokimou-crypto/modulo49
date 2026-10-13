@@ -21,6 +21,14 @@ Onglet **Valeur cible** : saisissez le nombre que vous attendez puis **Vérifier
 
 Cliquer sur une ligne surligne la fenêtre de valeurs utilisée sur le graphique. La cible est revérifiée automatiquement quand on change N ou les données.
 
+## Récapitulatif exportable
+Dans l'onglet **Valeur cible**, le bouton **Récapitulatif…** ouvre une fenêtre qui montre le point commun entre les méthodes :
+- un **tableau** par modèle : confirme ou non, nombre de k qui donnent la cible, k min, k max, **étendue de la plage** (k max - k min + 1), plages de k, valeur la plus proche ;
+- un **histogramme** : pour chaque k (nombre de dernières valeurs), combien de modèles confirment la cible ; les barres foncées marquent l'accord maximal ;
+- une **carte des plages** : pour chaque modèle, les k qui donnent la cible (vert) ; la zone orange est commune à tous les modèles qui confirment.
+
+Boutons d'export : **tableau en CSV** (s'ouvre directement dans Excel ; contient aussi le détail par k et la prédiction de chaque modèle pour chaque k) et **graphique en PNG ou PDF**.
+
 ## Limite importante
 Pour une suite qui suit une loi (progression, accélération régulière…), la prédiction est exacte. Pour des **tirages aléatoires** (loto, etc.), aucun modèle ne peut prédire le nombre suivant mieux que le hasard : l'écart moyen affiché le montre.
 
