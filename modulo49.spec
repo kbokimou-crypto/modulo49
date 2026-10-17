@@ -4,7 +4,7 @@
 a = Analysis(
     ['modulo49.py'],
     pathex=['.'],
-    datas=[('exemple.csv', '.')],
+    datas=[('exemple.csv', '.'), ('exemple_colonnes.csv', '.')],
     hiddenimports=['matplotlib.backends.backend_tkagg', 'PIL._tkinter_finder'],
     excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'IPython', 'pandas', 'scipy'],
 )

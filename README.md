@@ -13,6 +13,16 @@ Programme Windows qui modélise la fonction d'évolution d'une suite de nombres 
 - **Choix du modèle** : chaque modèle est testé pas à pas sur l'historique ; celui dont l'écart moyen avec les valeurs réelles est le plus faible est retenu (★). Cliquer sur une autre ligne du tableau affiche ce modèle sur le graphique.
 - **MOD N** : la prévision brute est arrondie puis réduite modulo N. Si le résultat vaut 0, il est remplacé par **1** (valeur suivante du cycle). Changer N relance immédiatement tout le calcul.
 
+## Calcul sur plusieurs colonnes
+Bouton **Plusieurs colonnes…** (ou réponse « Oui » quand un CSV chargé contient plusieurs colonnes) : chaque colonne du fichier (A, B, C…) est une suite calculée séparément, avec le même modulo N.
+- Les colonnes peuvent avoir des longueurs différentes (les cellules vides sont ignorées) ; une ligne d'en-tête donne le nom des colonnes.
+- Le tableau affiche, pour toutes les colonnes en même temps : nombre de valeurs, dernière valeur, prédiction retenue et son modèle, écart moyen, prédiction **majoritaire** (donnée par le plus de modèles) et la prédiction de chacun des 7 modèles.
+- Avec une **valeur cible** (facultative) : nombre de modèles qui la confirment et k de l'accord maximal, par colonne ; les colonnes qui la confirment sont en vert.
+- **Exporter en CSV…** enregistre tous les résultats (s'ouvre dans Excel).
+- Double-clic sur une ligne : la colonne s'ouvre dans la vue principale (graphiques, onglet Valeur cible, récapitulatif).
+
+Exemple : `exemple_colonnes.csv`.
+
 ## Valeur cible (prédiction future)
 Onglet **Valeur cible** : saisissez le nombre que vous attendez puis **Vérifier**. Pour chaque modèle, le programme indique :
 - **Confirme** : oui si le modèle peut prédire cette cible ;

@@ -308,10 +308,17 @@ def resumer_fenetres(fenetres):
 
 
 # --------------------------------------------------------------------------- CSV
-def lire_csv(chemin):
-    """Lit les entiers positifs de la colonne A d'un CSV. Renvoie (valeurs, avertissements).
+def lettre_colonne(i):
+    """0 -> A, 25 -> Z, 26 -> AA (comme dans Excel)."""
+    lettres = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        lettres = chr(65 + r) + lettres
+    return lettres
 
-    La vérification par rapport au modulo N est faite au moment de l'analyse."""
+
+def _lire_lignes(chemin):
     with open(chemin, "rb") as f:
         brut = f.read()
     for enc in ("utf-8-sig", "cp1252", "latin-1"):
@@ -322,25 +329,138 @@ def lire_csv(chemin):
             continue
     echantillon = texte[:4096]
     try:
-        dialecte = csv.Sniffer().sniff(echantillon, delimiters=";,\t|")
-        sep = dialecte.delimiter
+        sep = csv.Sniffer().sniff(echantillon, delimiters=";,\t|").delimiter
     except csv.Error:
         sep = ";" if ";" in echantillon else ","
+    return list(csv.reader(io.StringIO(texte), delimiter=sep))
 
-    valeurs, avertissements = [], []
-    for num, ligne in enumerate(csv.reader(io.StringIO(texte), delimiter=sep), start=1):
-        if not ligne or not ligne[0].strip():
-            continue
-        cellule = ligne[0].strip().replace(",", ".")
+
+def _nombre(cellule):
+    try:
+        return float(cellule.strip().replace(",", "."))
+    except ValueError:
+        return None
+
+
+def lire_csv_colonnes(chemin):
+    """Lit toutes les colonnes d'un CSV.
+
+    Renvoie (colonnes, avertissements) où colonnes est une liste de
+    (nom, valeurs) : le nom est l'en-tête s'il y en a un, sinon la lettre (A, B…).
+    Les cellules vides sont ignorées, ce qui permet des colonnes de longueurs différentes.
+    """
+    lignes = _lire_lignes(chemin)
+    nb_col = max((len(l) for l in lignes), default=0)
+    entete = lignes[0] if lignes else []
+    a_entete = any(c.strip() and _nombre(c) is None for c in entete)
+    colonnes, avertissements = [], []
+    for j in range(nb_col):
+        lettre = lettre_colonne(j)
+        titre = entete[j].strip() if a_entete and j < len(entete) else ""
+        nom = f"{lettre} – {titre}" if titre else lettre
+        valeurs = []
+        for num, ligne in enumerate(lignes, start=1):
+            if (a_entete and num == 1) or j >= len(ligne) or not ligne[j].strip():
+                continue
+            v = _nombre(ligne[j])
+            if v is None:
+                avertissements.append(f"{lettre}{num} ignorée : « {ligne[j]} » n'est pas un nombre.")
+            elif v != int(v) or v < 1:
+                avertissements.append(f"{lettre}{num} ignorée : {ligne[j]} n'est pas un entier positif.")
+            else:
+                valeurs.append(int(v))
+        if valeurs:
+            colonnes.append((nom, valeurs))
+    return colonnes, avertissements
+
+
+def lire_csv(chemin):
+    """Lit les entiers positifs de la colonne A d'un CSV. Renvoie (valeurs, avertissements).
+
+    La vérification par rapport au modulo N est faite au moment de l'analyse."""
+    colonnes, avertissements = lire_csv_colonnes(chemin)
+    avertissements = [a for a in avertissements if a.startswith("A") and a[1].isdigit()]
+    if colonnes and colonnes[0][0].split(" ")[0] == "A":
+        return colonnes[0][1], avertissements
+    return [], avertissements
+
+
+# --------------------------------------------------------------------------- multi-colonnes
+def analyser_colonnes(colonnes, n=MODULO_DEFAUT, cible=None):
+    """Lance l'analyse (et la recherche de cible si fournie) sur chaque colonne."""
+    lignes = []
+    for nom, valeurs in colonnes:
+        ligne = {"colonne": nom, "nb": len(valeurs),
+                 "derniere": valeurs[-1] if valeurs else None, "erreur": None}
         try:
-            v = float(cellule)
-        except ValueError:
-            if num == 1:
-                continue  # ligne d'en-tête
-            avertissements.append(f"Ligne {num} ignorée : « {ligne[0]} » n'est pas un nombre.")
+            a = analyser(valeurs, n)
+        except ValueError as e:
+            ligne["erreur"] = str(e)
+            lignes.append(ligne)
             continue
-        if v != int(v) or v < 1:
-            avertissements.append(f"Ligne {num} ignorée : {ligne[0]} n'est pas un entier positif.")
-            continue
-        valeurs.append(int(v))
-    return valeurs, avertissements
+        m = a["meilleur"]
+        preds = {r["nom"]: r["prediction"] for r in a["modeles"]}
+        compte = {}
+        for p in preds.values():
+            compte[p] = compte.get(p, 0) + 1
+        majo = max(compte.items(), key=lambda kv: (kv[1], kv[0] == m["prediction"]))
+        ligne.update({
+            "valeurs": valeurs,
+            "analyse": a,
+            "prediction": m["prediction"],
+            "modele": m["nom"],
+            "brut": m["prediction_brute"],
+            "ecart": m["erreur"] if m["nb_tests"] else None,
+            "predictions": preds,
+            "majoritaire": majo[0],
+            "nb_majoritaire": majo[1],
+        })
+        if cible is not None:
+            res = chercher_cible(valeurs, cible, n)
+            rc = recapituler(res, len(valeurs))
+            ligne.update({
+                "cible_resultats": res,
+                "nb_confirmants": rc["nb_confirmants"],
+                "confirmants": [r["nom"] for r in res if r["confirme"]],
+                "accord_max": rc["accord_max"],
+                "k_accord_max": rc["k_accord_max"],
+                "k_communs": rc["k_communs_a_tous"],
+            })
+        lignes.append(ligne)
+    return lignes
+
+
+def exporter_colonnes_csv(chemin, lignes, n, cible=None):
+    """Exporte les résultats de toutes les colonnes (séparateur ;, pour Excel)."""
+    noms_modeles = [nom for nom, _, _ in MODELES]
+    with open(chemin, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["Analyse multi-colonnes Modulo49"])
+        w.writerow(["Modulo N", n])
+        w.writerow(["Valeur cible", cible if cible is not None else "aucune"])
+        w.writerow([])
+        entete = ["Colonne", "Nb de valeurs", "Dernière valeur", "Prédiction retenue",
+                  "Modèle retenu", "Valeur brute", "Écart moyen",
+                  "Prédiction majoritaire", "Nb de modèles d'accord"]
+        if cible is not None:
+            entete += ["Nb de modèles qui confirment la cible", "Modèles qui confirment",
+                       "Accord maximal (modèles)", "k de l'accord maximal",
+                       "k communs à tous les modèles qui confirment"]
+        entete += [f"Prédiction – {nom}" for nom in noms_modeles]
+        entete += ["Erreur"]
+        w.writerow(entete)
+        for l in lignes:
+            if l["erreur"]:
+                ligne = [l["colonne"], l["nb"], l["derniere"]] + [""] * (len(entete) - 4)
+                w.writerow(ligne + [l["erreur"]])
+                continue
+            ligne = [l["colonne"], l["nb"], l["derniere"], l["prediction"], l["modele"],
+                     f"{l['brut']:.2f}".replace(".", ","),
+                     "" if l["ecart"] is None else f"{l['ecart']:.2f}".replace(".", ","),
+                     l["majoritaire"], l["nb_majoritaire"]]
+            if cible is not None:
+                ligne += [l["nb_confirmants"], ", ".join(l["confirmants"]) or "aucun",
+                          l["accord_max"], resumer_fenetres(l["k_accord_max"]) or "aucun",
+                          resumer_fenetres(l["k_communs"]) or "aucun"]
+            ligne += [l["predictions"].get(nom, "") for nom in noms_modeles]
+            w.writerow(ligne + [""])

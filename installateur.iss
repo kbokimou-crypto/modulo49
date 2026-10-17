@@ -1,7 +1,7 @@
 ; Script Inno Setup : crée Modulo49-Setup.exe à partir de dist\Modulo49
 [Setup]
 AppName=Modulo49
-AppVersion=1.3
+AppVersion=1.4
 AppPublisher=Modulo49
 DefaultDirName={autopf}\Modulo49
 DefaultGroupName=Modulo49

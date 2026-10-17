@@ -41,6 +41,8 @@ class Application(tk.Tk):
         self.lbl_intervalle = ttk.Label(haut, text="(valeurs admises : 1 à 49, le 0 devient 1)")
         self.lbl_intervalle.pack(side="left", padx=(4, 0))
         ttk.Button(haut, text="Recalculer", command=self.recalculer).pack(side="left", padx=8)
+        ttk.Button(haut, text="Plusieurs colonnes…",
+                   command=lambda: self.ouvrir_multi()).pack(side="left")
         self.lbl_fichier = ttk.Label(haut, text="Aucun fichier (nombres en colonne A)")
         self.lbl_fichier.pack(side="left", padx=10)
 
@@ -139,6 +141,29 @@ class Application(tk.Tk):
             extrait = "\n".join(avert[:15]) + ("\n…" if len(avert) > 15 else "")
             messagebox.showwarning(TITRE, f"{len(avert)} ligne(s) ignorée(s) :\n\n{extrait}")
         self.recalculer()
+        try:
+            colonnes, _ = moteur.lire_csv_colonnes(chemin)
+        except OSError:
+            return
+        if len(colonnes) > 1 and messagebox.askyesno(
+                TITRE, f"Le fichier contient {len(colonnes)} colonnes de nombres.\n\n"
+                       f"Lancer le calcul sur toutes les colonnes en même temps ?"):
+            self.ouvrir_multi(chemin)
+
+    def ouvrir_multi(self, chemin=None):
+        n = self._modulo()
+        if n is not None:
+            FenetreMulti(self, n, chemin)
+
+    def charger_valeurs(self, nom, valeurs, cible=None):
+        """Affiche une colonne dans la vue principale (depuis la fenêtre multi-colonnes)."""
+        self.lbl_fichier.config(text=f"Colonne {nom} – {len(valeurs)} nombres")
+        self.txt.delete("1.0", "end")
+        self.txt.insert("1.0", "\n".join(map(str, valeurs)))
+        self.var_cible.set("" if cible is None else str(cible))
+        self.cible = None
+        self.recalculer()
+        self.lift()
 
     def _modulo(self):
         try:
@@ -422,6 +447,171 @@ class FenetreRecap(tk.Toplevel):
                 messagebox.showerror(TITRE, f"Export impossible :\n{e}", parent=self)
                 return
             messagebox.showinfo(TITRE, f"Graphique exporté :\n{chemin}", parent=self)
+
+
+class FenetreMulti(tk.Toplevel):
+    """Calcul simultané sur toutes les colonnes d'un CSV, avec export CSV."""
+
+    ABREGES = ["Lin.", "Quad.", "Cub.", "Saut moy.", "Dern. saut", "Réc. 1", "Réc. 2"]
+
+    def __init__(self, parent, n, chemin=None):
+        super().__init__(parent)
+        self.parent, self.n = parent, n
+        self.colonnes, self.lignes, self.cible = [], [], None
+        self.title(f"Modulo49 – Calcul sur plusieurs colonnes (MOD {n})")
+        self.geometry("1250x560")
+        self._construire()
+        if chemin:
+            self.charger(chemin)
+
+    def _construire(self):
+        haut = ttk.Frame(self, padding=8)
+        haut.pack(fill="x")
+        ttk.Button(haut, text="Charger un CSV…", command=self.charger).pack(side="left")
+        ttk.Label(haut, text=f"Modulo N = {self.n}").pack(side="left", padx=10)
+        ttk.Label(haut, text="Valeur cible (facultatif) :").pack(side="left", padx=(10, 2))
+        self.var_cible = tk.StringVar(value=self.parent.var_cible.get())
+        champ = ttk.Entry(haut, textvariable=self.var_cible, width=7)
+        champ.pack(side="left")
+        champ.bind("<Return>", lambda e: self.calculer())
+        ttk.Button(haut, text="Calculer toutes les colonnes",
+                   command=self.calculer).pack(side="left", padx=8)
+        ttk.Button(haut, text="Exporter en CSV…", command=self.exporter).pack(side="left")
+        self.lbl_info = ttk.Label(self, padding=(8, 0), justify="left",
+                                  text="Chargez un CSV : chaque colonne (A, B, C…) est une suite "
+                                       "calculée séparément.")
+        self.lbl_info.pack(fill="x")
+
+        cadre = ttk.Frame(self, padding=8)
+        cadre.pack(fill="both", expand=True)
+        self.table = ttk.Treeview(cadre, show="headings")
+        sx = ttk.Scrollbar(cadre, orient="horizontal", command=self.table.xview)
+        sy = ttk.Scrollbar(cadre, orient="vertical", command=self.table.yview)
+        self.table.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
+        self.table.grid(row=0, column=0, sticky="nsew")
+        sy.grid(row=0, column=1, sticky="ns")
+        sx.grid(row=1, column=0, sticky="ew")
+        cadre.rowconfigure(0, weight=1)
+        cadre.columnconfigure(0, weight=1)
+        self.table.tag_configure("oui", foreground="#1a7f37")
+        self.table.tag_configure("erreur", foreground="#b42318")
+        self.table.bind("<Double-1>", lambda e: self.ouvrir_colonne())
+        bas = ttk.Frame(self, padding=(8, 0, 8, 8))
+        bas.pack(fill="x")
+        ttk.Button(bas, text="Ouvrir la colonne sélectionnée dans la vue principale",
+                   command=self.ouvrir_colonne).pack(side="left")
+        ttk.Label(bas, foreground="#777", text="  (ou double-clic sur une ligne)").pack(side="left")
+
+    def charger(self, chemin=None):
+        if not chemin:
+            chemin = filedialog.askopenfilename(
+                parent=self, title="Choisir le fichier CSV",
+                filetypes=[("Fichiers CSV", "*.csv"), ("Fichiers texte", "*.txt"), ("Tous", "*.*")])
+        if not chemin:
+            return
+        try:
+            self.colonnes, avert = moteur.lire_csv_colonnes(chemin)
+        except OSError as e:
+            messagebox.showerror(TITRE, f"Impossible de lire le fichier :\n{e}", parent=self)
+            return
+        self.fichier = os.path.basename(chemin)
+        if avert:
+            extrait = "\n".join(avert[:15]) + ("\n…" if len(avert) > 15 else "")
+            messagebox.showwarning(TITRE, f"{len(avert)} cellule(s) ignorée(s) :\n\n{extrait}",
+                                   parent=self)
+        self.calculer()
+
+    def calculer(self):
+        if not self.colonnes:
+            messagebox.showinfo(TITRE, "Chargez d'abord un fichier CSV.", parent=self)
+            return
+        texte = self.var_cible.get().strip()
+        cible = None
+        if texte:
+            try:
+                cible = int(texte)
+                if not 1 <= cible <= self.n - 1:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror(TITRE, f"La valeur cible doit être un entier entre 1 et "
+                                            f"{self.n - 1}.", parent=self)
+                return
+        self.cible = cible
+        self.lignes = moteur.analyser_colonnes(self.colonnes, self.n, cible)
+        self._remplir()
+
+    def _remplir(self):
+        cols = ["colonne", "nb", "derniere", "pred", "modele", "ecart", "majo"]
+        titres = ["Colonne", "Nb", "Dernière", "Prédiction", "Modèle retenu", "Écart",
+                  "Majoritaire"]
+        largeurs = [150, 45, 72, 82, 165, 55, 90]
+        if self.cible is not None:
+            cols += ["confirment", "kaccord"]
+            titres += [f"Confirment {self.cible}", "k accord max"]
+            largeurs += [110, 100]
+        noms = [nom for nom, _, _ in moteur.MODELES]
+        cols += [f"m{i}" for i in range(len(noms))]
+        titres += self.ABREGES[:len(noms)]
+        largeurs += [74] * len(noms)
+        self.table.configure(columns=cols)
+        for c, t, l in zip(cols, titres, largeurs):
+            self.table.heading(c, text=t)
+            self.table.column(c, width=l, minwidth=40, stretch=False,
+                              anchor="w" if c in ("colonne", "modele") else "center")
+        self.table.delete(*self.table.get_children())
+        for i, l in enumerate(self.lignes):
+            if l["erreur"]:
+                vals = [l["colonne"], l["nb"], l["derniere"], "–", l["erreur"]]
+                self.table.insert("", "end", iid=str(i), values=vals, tags=("erreur",))
+                continue
+            vals = [l["colonne"], l["nb"], l["derniere"], l["prediction"], l["modele"],
+                    "–" if l["ecart"] is None else f"{l['ecart']:.2f}",
+                    f"{l['majoritaire']} ({l['nb_majoritaire']}/{len(noms)})"]
+            tags = ()
+            if self.cible is not None:
+                vals += [f"{l['nb_confirmants']}/{len(noms)}",
+                         moteur.resumer_fenetres(l["k_accord_max"]) or "–"]
+                if l["nb_confirmants"]:
+                    tags = ("oui",)
+            vals += [l["predictions"].get(nom, "–") for nom in noms]
+            self.table.insert("", "end", iid=str(i), values=vals, tags=tags)
+        ok = [l for l in self.lignes if not l["erreur"]]
+        info = (f"{self.fichier} : {len(self.lignes)} colonne(s) calculée(s)"
+                + (f", {len(self.lignes) - len(ok)} en erreur" if len(ok) < len(self.lignes) else "")
+                + ". « Majoritaire » = prédiction donnée par le plus de modèles.")
+        if self.cible is not None:
+            nb = sum(1 for l in ok if l["nb_confirmants"])
+            info += f" Cible {self.cible} confirmée dans {nb} colonne(s) (en vert)."
+        self.lbl_info.config(text=info)
+
+    def ouvrir_colonne(self):
+        sel = self.table.selection()
+        if not sel:
+            messagebox.showinfo(TITRE, "Sélectionnez une colonne dans le tableau.", parent=self)
+            return
+        l = self.lignes[int(sel[0])]
+        if l["erreur"]:
+            messagebox.showerror(TITRE, l["erreur"], parent=self)
+            return
+        self.parent.var_n.set(str(self.n))
+        self.parent.charger_valeurs(l["colonne"], l["valeurs"], self.cible)
+
+    def exporter(self):
+        if not self.lignes:
+            messagebox.showinfo(TITRE, "Rien à exporter : chargez et calculez d'abord.", parent=self)
+            return
+        chemin = filedialog.asksaveasfilename(
+            parent=self, title="Exporter les résultats", defaultextension=".csv",
+            initialfile=f"resultats_colonnes_mod{self.n}.csv",
+            filetypes=[("CSV (Excel)", "*.csv")])
+        if not chemin:
+            return
+        try:
+            moteur.exporter_colonnes_csv(chemin, self.lignes, self.n, self.cible)
+        except OSError as e:
+            messagebox.showerror(TITRE, f"Export impossible :\n{e}", parent=self)
+            return
+        messagebox.showinfo(TITRE, f"Résultats exportés :\n{chemin}", parent=self)
 
 
 def main():
