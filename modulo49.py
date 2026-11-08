@@ -2,6 +2,8 @@
 
 import os
 import sys
+import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -450,59 +452,215 @@ class FenetreRecap(tk.Toplevel):
 
 
 class FenetreMulti(tk.Toplevel):
-    """Calcul simultané sur toutes les colonnes d'un CSV, avec export CSV."""
+    """Calcul sur toutes les colonnes d'un CSV, avec un modulo fixe ou une plage de N
+    choisi colonne par colonne, et export CSV des résultats."""
 
     ABREGES = ["Lin.", "Quad.", "Cub.", "Saut moy.", "Dern. saut", "Réc. 1", "Réc. 2"]
+    FIXE, PLAGE = "Fixe", "Plage min–max"
+    LIMITE_AFFICHAGE = 5000      # lignes du détail affichées (l'export contient tout)
+    LARGEURS = (230, 130, 135, 85, 85, 85, 300)  # colonnes de la grille de réglage
 
     def __init__(self, parent, n, chemin=None):
         super().__init__(parent)
-        self.parent, self.n = parent, n
-        self.colonnes, self.lignes, self.cible = [], [], None
-        self.title(f"Modulo49 – Calcul sur plusieurs colonnes (MOD {n})")
-        self.geometry("1250x560")
+        self.parent, self.n_defaut = parent, n
+        self.colonnes, self.lignes_reglage = [], []
+        self.synthese, self.details, self.complet, self.cible = [], [], True, None
+        self.fichier = ""
+        self._fil, self._resultat, self._suivi = None, None, None
+        self._arret = threading.Event()
+        self._progression = (0, 0)
+        self.title("Modulo49 – Calcul sur plusieurs colonnes")
+        self.geometry("1240x740")
+        self.minsize(900, 560)
+        self.protocol("WM_DELETE_WINDOW", self._fermer)
         self._construire()
         if chemin:
             self.charger(chemin)
 
+    # ------------------------------------------------------------------ interface
     def _construire(self):
         haut = ttk.Frame(self, padding=8)
         haut.pack(fill="x")
-        ttk.Button(haut, text="Charger un CSV…", command=self.charger).pack(side="left")
-        ttk.Label(haut, text=f"Modulo N = {self.n}").pack(side="left", padx=10)
-        ttk.Label(haut, text="Valeur cible (facultatif) :").pack(side="left", padx=(10, 2))
+        self.btn_charger = ttk.Button(haut, text="Charger un CSV…", command=self.charger)
+        self.btn_charger.pack(side="left")
+        ttk.Label(haut, text="Valeur cible (facultatif) :").pack(side="left", padx=(14, 2))
         self.var_cible = tk.StringVar(value=self.parent.var_cible.get())
-        champ = ttk.Entry(haut, textvariable=self.var_cible, width=7)
-        champ.pack(side="left")
-        champ.bind("<Return>", lambda e: self.calculer())
-        ttk.Button(haut, text="Calculer toutes les colonnes",
-                   command=self.calculer).pack(side="left", padx=8)
-        ttk.Button(haut, text="Exporter en CSV…", command=self.exporter).pack(side="left")
+        ttk.Entry(haut, textvariable=self.var_cible, width=7).pack(side="left")
+        self.btn_calculer = ttk.Button(haut, text="Calculer toutes les colonnes",
+                                       command=self.calculer)
+        self.btn_calculer.pack(side="left", padx=(10, 4))
+        self.btn_arreter = ttk.Button(haut, text="Arrêter", command=self._arret.set,
+                                      state="disabled")
+        self.btn_arreter.pack(side="left")
+        self.btn_exporter = ttk.Button(haut, text="Exporter en CSV…", command=self.exporter)
+        self.btn_exporter.pack(side="left", padx=10)
         self.lbl_info = ttk.Label(self, padding=(8, 0), justify="left",
                                   text="Chargez un CSV : chaque colonne (A, B, C…) est une suite "
-                                       "calculée séparément.")
+                                       "calculée séparément, avec son propre modulo.")
         self.lbl_info.pack(fill="x")
 
-        cadre = ttk.Frame(self, padding=8)
-        cadre.pack(fill="both", expand=True)
-        self.table = ttk.Treeview(cadre, show="headings")
-        sx = ttk.Scrollbar(cadre, orient="horizontal", command=self.table.xview)
-        sy = ttk.Scrollbar(cadre, orient="vertical", command=self.table.yview)
-        self.table.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
-        self.table.grid(row=0, column=0, sticky="nsew")
+        # --- réglage du modulo colonne par colonne
+        cadre = ttk.LabelFrame(self, text="Modulo par colonne : valeur fixe, ou plage de N "
+                                          "(chaque N de N min à N max est calculé)", padding=6)
+        cadre.pack(fill="x", padx=8, pady=6)
+        entete = ttk.Frame(cadre)
+        entete.pack(fill="x")
+        self._grille(entete)
+        for j, titre in enumerate(("Colonne", "Valeurs", "Mode", "N fixe", "N min", "N max",
+                                   "Calculs prévus")):
+            ttk.Label(entete, text=titre, font=("Segoe UI", 9, "bold")).grid(
+                row=0, column=j, sticky="w", padx=2)
+        # ligne « toutes les colonnes » pour appliquer le même réglage partout
+        self.tout = self._variables(self.n_defaut, self.n_defaut, self.n_defaut + 10)
+        ttk.Label(entete, text="Toutes les colonnes :").grid(row=1, column=0, sticky="w", padx=2)
+        ttk.Button(entete, text="Appliquer à toutes ↓", command=self._appliquer_a_toutes).grid(
+            row=1, column=1, sticky="w", padx=2)
+        self._widgets_reglage(entete, 1, self.tout)
+        ttk.Separator(cadre).pack(fill="x", pady=4)
+
+        zone = ttk.Frame(cadre)
+        zone.pack(fill="x")
+        self.canevas = tk.Canvas(zone, height=130, highlightthickness=0)
+        sb = ttk.Scrollbar(zone, orient="vertical", command=self.canevas.yview)
+        self.canevas.configure(yscrollcommand=sb.set)
+        self.canevas.pack(side="left", fill="x", expand=True)
+        sb.pack(side="right", fill="y")
+        self.grille = ttk.Frame(self.canevas)
+        self.canevas.create_window((0, 0), window=self.grille, anchor="nw")
+        self.grille.bind("<Configure>", lambda e: self.canevas.configure(
+            scrollregion=self.canevas.bbox("all")))
+        self._grille(self.grille)
+
+        # --- progression
+        prog = ttk.Frame(self, padding=(8, 0))
+        prog.pack(fill="x")
+        self.barre = ttk.Progressbar(prog, mode="determinate", length=300)
+        self.barre.pack(side="left")
+        self.lbl_prog = ttk.Label(prog, text="")
+        self.lbl_prog.pack(side="left", padx=8)
+
+        # --- résultats
+        self.onglets = ttk.Notebook(self)
+        self.onglets.pack(fill="both", expand=True, padx=8, pady=6)
+        self.table_synthese = self._table(self.onglets, "Synthèse par colonne")
+        self.table_detail = self._table(self.onglets, "Détail par N")
+        bas = ttk.Frame(self, padding=(8, 0, 8, 8))
+        bas.pack(fill="x")
+        ttk.Button(bas, text="Ouvrir la ligne sélectionnée dans la vue principale",
+                   command=self.ouvrir_ligne).pack(side="left")
+        ttk.Label(bas, foreground="#777", justify="left", text=(
+            "  Double-clic = ouvrir. ★ = meilleur N de la colonne : plus forte réussite "
+            "(prédictions exactes en validation pas à pas),\n  puis plus petit écart relatif "
+            "(écart moyen / (N/2) : 0 % = parfait, environ 50 % = hasard).")).pack(side="left")
+
+    def _grille(self, cadre):
+        for j, largeur in enumerate(self.LARGEURS):
+            cadre.columnconfigure(j, minsize=largeur)
+
+    def _table(self, onglets, titre):
+        cadre = ttk.Frame(onglets, padding=4)
+        onglets.add(cadre, text=titre)
+        table = ttk.Treeview(cadre, show="headings")
+        sx = ttk.Scrollbar(cadre, orient="horizontal", command=table.xview)
+        sy = ttk.Scrollbar(cadre, orient="vertical", command=table.yview)
+        table.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
+        table.grid(row=0, column=0, sticky="nsew")
         sy.grid(row=0, column=1, sticky="ns")
         sx.grid(row=1, column=0, sticky="ew")
         cadre.rowconfigure(0, weight=1)
         cadre.columnconfigure(0, weight=1)
-        self.table.tag_configure("oui", foreground="#1a7f37")
-        self.table.tag_configure("erreur", foreground="#b42318")
-        self.table.bind("<Double-1>", lambda e: self.ouvrir_colonne())
-        bas = ttk.Frame(self, padding=(8, 0, 8, 8))
-        bas.pack(fill="x")
-        ttk.Button(bas, text="Ouvrir la colonne sélectionnée dans la vue principale",
-                   command=self.ouvrir_colonne).pack(side="left")
-        ttk.Label(bas, foreground="#777", text="  (ou double-clic sur une ligne)").pack(side="left")
+        table.tag_configure("oui", foreground="#1a7f37")
+        table.tag_configure("meilleur", background="#e6f2ea")
+        table.tag_configure("erreur", foreground="#b42318")
+        table.bind("<Double-1>", lambda e: self.ouvrir_ligne())
+        return table
 
+    def _variables(self, n, n_min, n_max):
+        return {"mode": tk.StringVar(value=self.FIXE), "n": tk.StringVar(value=str(n)),
+                "n_min": tk.StringVar(value=str(n_min)), "n_max": tk.StringVar(value=str(n_max))}
+
+    def _widgets_reglage(self, cadre, ligne, v, maxi=None):
+        """Mode + N fixe + N min + N max (+ calculs prévus si maxi est donné)."""
+        ttk.Combobox(cadre, textvariable=v["mode"], values=(self.FIXE, self.PLAGE),
+                     state="readonly", width=15).grid(row=ligne, column=2, sticky="w", padx=2)
+        champs = {}
+        for j, cle in ((3, "n"), (4, "n_min"), (5, "n_max")):
+            champs[cle] = ttk.Spinbox(cadre, from_=moteur.MODULO_MIN, to=moteur.MODULO_MAX,
+                                      width=7, textvariable=v[cle])
+            champs[cle].grid(row=ligne, column=j, sticky="w", padx=2, pady=1)
+        info = None
+        if maxi is not None:
+            info = tk.Label(cadre, anchor="w")
+            info.grid(row=ligne, column=6, sticky="w", padx=2)
+
+        def maj(*_):
+            plage = v["mode"].get() == self.PLAGE
+            champs["n"].configure(state="disabled" if plage else "normal")
+            champs["n_min"].configure(state="normal" if plage else "disabled")
+            champs["n_max"].configure(state="normal" if plage else "disabled")
+            if info is not None:
+                texte, rouge = self._prevision(v, maxi)
+                info.configure(text=texte, fg="#b42318" if rouge else "#1f2328")
+                self._maj_total()
+        for var in v.values():
+            var.trace_add("write", maj)
+        maj()
+
+    def _reglage(self, v):
+        if v["mode"].get() == self.PLAGE:
+            return {"mode": "plage", "n_min": int(v["n_min"].get()), "n_max": int(v["n_max"].get())}
+        return {"mode": "fixe", "n": int(v["n"].get())}
+
+    def _prevision(self, v, maxi):
+        """Texte « calculs prévus » d'une ligne, et s'il signale un problème."""
+        try:
+            modulos = moteur.modulos_a_tester(self._reglage(v))
+        except ValueError as e:
+            return (str(e) if "N min" in str(e) or "compris" in str(e)
+                    else "valeur de N invalide"), True
+        calculables = [n for n in modulos if n > maxi]
+        if not calculables:
+            return f"aucun N calculable : il faut N ≥ {maxi + 1}", True
+        texte = f"{len(calculables)} calcul(s) : N = {moteur.resumer_fenetres(calculables)}"
+        if len(calculables) < len(modulos):
+            texte += f" (N ≤ {maxi} ignorés)"
+        return texte, False
+
+    def _maj_total(self):
+        if self._fil is not None or not self.lignes_reglage:
+            return
+        total = 0
+        for (_, valeurs), v in zip(self.colonnes, self.lignes_reglage):
+            try:
+                total += sum(1 for n in moteur.modulos_a_tester(self._reglage(v)) if n > max(valeurs))
+            except ValueError:
+                pass
+        self.lbl_prog.configure(text=f"{total} calcul(s) à faire au total.")
+
+    def _appliquer_a_toutes(self):
+        for v in self.lignes_reglage:
+            for cle in v:
+                v[cle].set(self.tout[cle].get())
+
+    def _remplir_reglages(self):
+        for w in self.grille.winfo_children():
+            w.destroy()
+        self.lignes_reglage = []
+        for i, (nom, valeurs) in enumerate(self.colonnes):
+            maxi = max(valeurs)
+            n = self.n_defaut if self.n_defaut > maxi else maxi + 1
+            v = self._variables(n, n, n + 10)
+            ttk.Label(self.grille, text=nom).grid(row=i, column=0, sticky="w", padx=2)
+            ttk.Label(self.grille, text=f"{len(valeurs)} val., max {maxi}").grid(
+                row=i, column=1, sticky="w", padx=2)
+            self.lignes_reglage.append(v)
+            self._widgets_reglage(self.grille, i, v, maxi)
+        self._maj_total()
+
+    # ------------------------------------------------------------------ actions
     def charger(self, chemin=None):
+        if self._fil is not None:
+            return
         if not chemin:
             chemin = filedialog.askopenfilename(
                 parent=self, title="Choisir le fichier CSV",
@@ -515,13 +673,19 @@ class FenetreMulti(tk.Toplevel):
             messagebox.showerror(TITRE, f"Impossible de lire le fichier :\n{e}", parent=self)
             return
         self.fichier = os.path.basename(chemin)
+        self.synthese, self.details = [], []
+        self._remplir_tables()
+        self._remplir_reglages()
+        self.lbl_info.configure(text=f"{self.fichier} : {len(self.colonnes)} colonne(s). Réglez le "
+                                     f"modulo de chaque colonne, puis « Calculer toutes les colonnes ».")
         if avert:
             extrait = "\n".join(avert[:15]) + ("\n…" if len(avert) > 15 else "")
             messagebox.showwarning(TITRE, f"{len(avert)} cellule(s) ignorée(s) :\n\n{extrait}",
                                    parent=self)
-        self.calculer()
 
     def calculer(self):
+        if self._fil is not None:
+            return
         if not self.colonnes:
             messagebox.showinfo(TITRE, "Chargez d'abord un fichier CSV.", parent=self)
             return
@@ -530,88 +694,200 @@ class FenetreMulti(tk.Toplevel):
         if texte:
             try:
                 cible = int(texte)
-                if not 1 <= cible <= self.n - 1:
+                if cible < 1:
                     raise ValueError
             except ValueError:
-                messagebox.showerror(TITRE, f"La valeur cible doit être un entier entre 1 et "
-                                            f"{self.n - 1}.", parent=self)
+                messagebox.showerror(TITRE, "La valeur cible doit être un entier positif "
+                                            "(elle doit aussi être inférieure à N).", parent=self)
                 return
+        reglages = []
+        for (nom, _), v in zip(self.colonnes, self.lignes_reglage):
+            try:
+                reglage = self._reglage(v)
+                moteur.modulos_a_tester(reglage)
+            except ValueError as e:
+                messagebox.showerror(TITRE, f"Colonne {nom} : réglage du modulo invalide.\n{e}"
+                                     if "N min" in str(e) or "compris" in str(e) else
+                                     f"Colonne {nom} : N doit être un entier entre "
+                                     f"{moteur.MODULO_MIN} et {moteur.MODULO_MAX}.", parent=self)
+                return
+            reglages.append(reglage)
         self.cible = cible
-        self.lignes = moteur.analyser_colonnes(self.colonnes, self.n, cible)
-        self._remplir()
+        self._arret.clear()
+        self._progression = (0, 1)
+        self._resultat = None
+        self._debut = time.perf_counter()
+        for b in (self.btn_calculer, self.btn_exporter, self.btn_charger):
+            b.configure(state="disabled")
+        self.btn_arreter.configure(state="normal")
+        colonnes = list(self.colonnes)
 
-    def _remplir(self):
-        cols = ["colonne", "nb", "derniere", "pred", "modele", "ecart", "majo"]
-        titres = ["Colonne", "Nb", "Dernière", "Prédiction", "Modèle retenu", "Écart",
-                  "Majoritaire"]
-        largeurs = [150, 45, 72, 82, 165, 55, 90]
-        if self.cible is not None:
-            cols += ["confirment", "kaccord"]
-            titres += [f"Confirment {self.cible}", "k accord max"]
-            largeurs += [110, 100]
+        def rappel(fait, total):
+            self._progression = (fait, total)
+            return not self._arret.is_set()
+
+        def travail():
+            try:
+                self._resultat = moteur.analyser_colonnes(colonnes, reglages, cible, rappel)
+            except Exception as e:  # remonté à l'interface
+                self._resultat = e
+
+        self._fil = threading.Thread(target=travail, daemon=True)
+        self._fil.start()
+        self._suivre()
+
+    def _suivre(self):
+        fait, total = self._progression
+        self.barre.configure(maximum=max(total, 1), value=fait)
+        self.lbl_prog.configure(text=f"Calcul en cours : {fait} / {total} …")
+        if self._fil.is_alive():
+            self._suivi = self.after(100, self._suivre)
+            return
+        self._fil, self._suivi = None, None
+        for b in (self.btn_calculer, self.btn_exporter, self.btn_charger):
+            b.configure(state="normal")
+        self.btn_arreter.configure(state="disabled")
+        if isinstance(self._resultat, Exception):
+            messagebox.showerror(TITRE, f"Le calcul a échoué :\n{self._resultat}", parent=self)
+            return
+        self.synthese, self.details, self.complet = self._resultat
+        duree = time.perf_counter() - self._debut
+        nb = len(self.details)
+        self.lbl_prog.configure(text=(
+            f"Terminé : {nb} calcul(s) en {duree:.1f} s." if self.complet else
+            f"Arrêté : résultats partiels ({nb} calcul(s) faits)."))
+        self._remplir_tables()
+
+    def _colonnes_table(self, table, colonnes):
+        table.configure(columns=[c for c, _, _ in colonnes])
+        for c, titre, largeur in colonnes:
+            table.heading(c, text=titre)
+            table.column(c, width=largeur, minwidth=40, stretch=False,
+                         anchor="w" if c in ("colonne", "modele", "reglage", "remarque", "confirme_n")
+                         else "center")
+
+    def _remplir_tables(self):
+        pc = lambda x: "–" if x is None else f"{x:.0f} %"
         noms = [nom for nom, _, _ in moteur.MODELES]
-        cols += [f"m{i}" for i in range(len(noms))]
-        titres += self.ABREGES[:len(noms)]
-        largeurs += [74] * len(noms)
-        self.table.configure(columns=cols)
-        for c, t, l in zip(cols, titres, largeurs):
-            self.table.heading(c, text=t)
-            self.table.column(c, width=l, minwidth=40, stretch=False,
-                              anchor="w" if c in ("colonne", "modele") else "center")
-        self.table.delete(*self.table.get_children())
-        for i, l in enumerate(self.lignes):
-            if l["erreur"]:
-                vals = [l["colonne"], l["nb"], l["derniere"], "–", l["erreur"]]
-                self.table.insert("", "end", iid=str(i), values=vals, tags=("erreur",))
+        c = self.cible
+        # synthèse
+        cols = [("colonne", "Colonne", 200), ("reglage", "Modulo demandé", 125),
+                ("testes", "N calculés", 105), ("ignores", "N ignorés", 85),
+                ("meilleur", "Meilleur N", 80), ("pred", "Prédiction", 75),
+                ("modele", "Modèle retenu", 172), ("reussite", "Réussite", 68),
+                ("ecart", "Écart rel.", 70), ("freq", "Plus fréquente", 115)]
+        if c is not None:
+            cols += [("confirme_n", f"N où {c} est confirmée", 175),
+                     ("accord", "Meilleur accord", 150)]
+        cols += [("remarque", "Remarque", 330)]
+        t = self.table_synthese
+        self._colonnes_table(t, cols)
+        t.delete(*t.get_children())
+        for i, s in enumerate(self.synthese):
+            debut = [s["colonne"], s["reglage"], moteur.resumer_fenetres(s["testes"]) or "–",
+                     moteur.resumer_fenetres(s["ignores"]) or "–"]
+            if s["erreur"]:
+                t.insert("", "end", iid=str(i), tags=("erreur",),
+                         values=debut + ["–"] * (len(cols) - len(debut) - 1) + [s["erreur"]])
                 continue
-            vals = [l["colonne"], l["nb"], l["derniere"], l["prediction"], l["modele"],
-                    "–" if l["ecart"] is None else f"{l['ecart']:.2f}",
-                    f"{l['majoritaire']} ({l['nb_majoritaire']}/{len(noms)})"]
+            m = s["meilleure"]
+            vals = debut + [m["n"], m["prediction"], m["modele"], pc(m["reussite"]),
+                            pc(m["ecart_relatif"]),
+                            f"{s['frequente']} ({s['nb_frequente']}/{len(s['testes'])} N)"]
             tags = ()
-            if self.cible is not None:
-                vals += [f"{l['nb_confirmants']}/{len(noms)}",
-                         moteur.resumer_fenetres(l["k_accord_max"]) or "–"]
-                if l["nb_confirmants"]:
+            if c is not None:
+                vals += [moteur.resumer_fenetres(s["n_confirment"]) or "aucun",
+                         f"{s['accord_max']}/{len(noms)} pour N = "
+                         f"{moteur.resumer_fenetres(s['n_accord_max'])}" if s["accord_max"] else "–"]
+                if s["n_confirment"]:
                     tags = ("oui",)
+            t.insert("", "end", iid=str(i), tags=tags, values=vals + [""])
+        # détail
+        cols = [("colonne", "Colonne", 200), ("n", "N", 60), ("pred", "Prédiction", 75),
+                ("modele", "Modèle retenu", 172), ("ecart", "Écart", 55),
+                ("ecartr", "Écart rel.", 70), ("reussite", "Réussite", 68),
+                ("majo", "Majoritaire", 85)]
+        if c is not None:
+            cols += [("confirment", f"Confirment {c}", 112), ("kaccord", "k accord max", 100)]
+        cols += [(f"m{i}", abrege, 70) for i, abrege in enumerate(self.ABREGES[:len(noms)])]
+        cols += [("remarque", "Remarque", 330)]
+        t = self.table_detail
+        self._colonnes_table(t, cols)
+        t.delete(*t.get_children())
+        for i, l in enumerate(self.details[:self.LIMITE_AFFICHAGE]):
+            if l["erreur"]:
+                t.insert("", "end", iid=str(i), tags=("erreur",),
+                         values=[l["colonne"], l["n"]] + ["–"] * (len(cols) - 3) + [l["erreur"]])
+                continue
+            vals = [l["colonne"], ("★ " if l.get("est_meilleure") else "") + str(l["n"]),
+                    l["prediction"], l["modele"],
+                    "–" if l["ecart"] is None else f"{l['ecart']:.2f}",
+                    pc(l["ecart_relatif"]), pc(l["reussite"]),
+                    f"{l['majoritaire']} ({l['nb_majoritaire']}/{len(noms)})"]
+            tags = ("meilleur",) if l.get("est_meilleure") else ()
+            if c is not None:
+                if l["nb_confirmants"] is None:
+                    vals += ["hors 1 à N-1", "–"]
+                else:
+                    vals += [f"{l['nb_confirmants']}/{len(noms)}",
+                             moteur.resumer_fenetres(l["k_accord_max"]) or "–"]
+                    if l["nb_confirmants"]:
+                        tags += ("oui",)
             vals += [l["predictions"].get(nom, "–") for nom in noms]
-            self.table.insert("", "end", iid=str(i), values=vals, tags=tags)
-        ok = [l for l in self.lignes if not l["erreur"]]
-        info = (f"{self.fichier} : {len(self.lignes)} colonne(s) calculée(s)"
-                + (f", {len(self.lignes) - len(ok)} en erreur" if len(ok) < len(self.lignes) else "")
-                + ". « Majoritaire » = prédiction donnée par le plus de modèles.")
-        if self.cible is not None:
-            nb = sum(1 for l in ok if l["nb_confirmants"])
-            info += f" Cible {self.cible} confirmée dans {nb} colonne(s) (en vert)."
-        self.lbl_info.config(text=info)
+            t.insert("", "end", iid=str(i), tags=tags, values=vals + [""])
+        if len(self.details) > self.LIMITE_AFFICHAGE:
+            self.lbl_prog.configure(text=self.lbl_prog.cget("text") + (
+                f" Détail : {self.LIMITE_AFFICHAGE} premières lignes affichées sur "
+                f"{len(self.details)} ; l'export CSV contient tout."))
+        if self.synthese:
+            nb_ok = sum(1 for s in self.synthese if not s["erreur"])
+            info = f"{self.fichier} : {nb_ok}/{len(self.synthese)} colonne(s) calculée(s)."
+            if c is not None:
+                nb = sum(1 for s in self.synthese if not s["erreur"] and s["n_confirment"])
+                info += f" Cible {c} confirmée dans {nb} colonne(s) (en vert)."
+            self.lbl_info.configure(text=info)
 
-    def ouvrir_colonne(self):
-        sel = self.table.selection()
+    def ouvrir_ligne(self):
+        detail = self.onglets.index(self.onglets.select()) == 1
+        table = self.table_detail if detail else self.table_synthese
+        sel = table.selection()
         if not sel:
-            messagebox.showinfo(TITRE, "Sélectionnez une colonne dans le tableau.", parent=self)
+            messagebox.showinfo(TITRE, "Sélectionnez une ligne dans le tableau.", parent=self)
             return
-        l = self.lignes[int(sel[0])]
-        if l["erreur"]:
-            messagebox.showerror(TITRE, l["erreur"], parent=self)
+        if detail:
+            ligne = self.details[int(sel[0])]
+        else:
+            s = self.synthese[int(sel[0])]
+            ligne = s["meilleure"] or s
+        if ligne.get("erreur"):
+            messagebox.showerror(TITRE, ligne["erreur"], parent=self)
             return
-        self.parent.var_n.set(str(self.n))
-        self.parent.charger_valeurs(l["colonne"], l["valeurs"], self.cible)
+        self.parent.var_n.set(str(ligne["n"]))
+        cible = self.cible if self.cible is not None and self.cible < ligne["n"] else None
+        self.parent.charger_valeurs(f"{ligne['colonne']} (N = {ligne['n']})", ligne["valeurs"], cible)
 
     def exporter(self):
-        if not self.lignes:
+        if not self.synthese:
             messagebox.showinfo(TITRE, "Rien à exporter : chargez et calculez d'abord.", parent=self)
             return
         chemin = filedialog.asksaveasfilename(
             parent=self, title="Exporter les résultats", defaultextension=".csv",
-            initialfile=f"resultats_colonnes_mod{self.n}.csv",
-            filetypes=[("CSV (Excel)", "*.csv")])
+            initialfile="resultats_colonnes.csv", filetypes=[("CSV (Excel)", "*.csv")])
         if not chemin:
             return
         try:
-            moteur.exporter_colonnes_csv(chemin, self.lignes, self.n, self.cible)
+            moteur.exporter_colonnes_csv(chemin, self.synthese, self.details, self.cible,
+                                         self.complet)
         except OSError as e:
             messagebox.showerror(TITRE, f"Export impossible :\n{e}", parent=self)
             return
         messagebox.showinfo(TITRE, f"Résultats exportés :\n{chemin}", parent=self)
+
+    def _fermer(self):
+        self._arret.set()
+        if self._suivi is not None:
+            self.after_cancel(self._suivi)
+        self.destroy()
 
 
 def main():

@@ -14,14 +14,23 @@ Programme Windows qui modélise la fonction d'évolution d'une suite de nombres 
 - **MOD N** : la prévision brute est arrondie puis réduite modulo N. Si le résultat vaut 0, il est remplacé par **1** (valeur suivante du cycle). Changer N relance immédiatement tout le calcul.
 
 ## Calcul sur plusieurs colonnes
-Bouton **Plusieurs colonnes…** (ou réponse « Oui » quand un CSV chargé contient plusieurs colonnes) : chaque colonne du fichier (A, B, C…) est une suite calculée séparément, avec le même modulo N.
-- Les colonnes peuvent avoir des longueurs différentes (les cellules vides sont ignorées) ; une ligne d'en-tête donne le nom des colonnes.
-- Le tableau affiche, pour toutes les colonnes en même temps : nombre de valeurs, dernière valeur, prédiction retenue et son modèle, écart moyen, prédiction **majoritaire** (donnée par le plus de modèles) et la prédiction de chacun des 7 modèles.
-- Avec une **valeur cible** (facultative) : nombre de modèles qui la confirment et k de l'accord maximal, par colonne ; les colonnes qui la confirment sont en vert.
-- **Exporter en CSV…** enregistre tous les résultats (s'ouvre dans Excel).
-- Double-clic sur une ligne : la colonne s'ouvre dans la vue principale (graphiques, onglet Valeur cible, récapitulatif).
+Bouton **Plusieurs colonnes…** (ou réponse « Oui » quand un CSV chargé contient plusieurs colonnes) : chaque colonne du fichier (A, B, C…) est une suite calculée séparément. Les colonnes peuvent avoir des longueurs différentes (les cellules vides sont ignorées) ; une ligne d'en-tête donne le nom des colonnes.
 
-Exemple : `exemple_colonnes.csv`.
+### Modulo choisi colonne par colonne
+Pour chaque colonne, choisissez le **Mode** :
+- **Fixe** : un seul modulo, saisi dans **N fixe** ;
+- **Plage min–max** : saisissez **N min** et **N max** ; le programme fait le calcul pour **chaque N** de N min à N max (bornes incluses).
+
+La ligne **Toutes les colonnes** + **Appliquer à toutes** recopie le même réglage sur toutes les colonnes. La colonne **Calculs prévus** indique, avant de lancer, combien de N seront calculés. Un N trop petit pour la colonne (N ≤ sa plus grande valeur) ne peut pas être utilisé : il est ignoré et signalé. Une barre de progression suit le calcul ; **Arrêter** l'interrompt en gardant les résultats déjà obtenus.
+
+### Résultats
+- Onglet **Synthèse par colonne** : N calculés, N ignorés, **meilleur N** de la colonne, sa prédiction et son modèle, réussite, écart relatif, prédiction **la plus fréquente** sur tous les N calculés. Avec une **valeur cible** (facultative) : les N pour lesquels au moins un modèle la confirme, et le N où le plus de modèles sont d'accord (colonnes en vert si la cible est confirmée).
+- Onglet **Détail par N** : une ligne par colonne et par N, avec la prédiction retenue, l'écart, la réussite, la prédiction majoritaire, la confirmation de la cible et la prédiction de chacun des 7 modèles (★ = meilleur N de la colonne).
+- **Réussite** : part des prédictions exactes quand chaque modèle est testé pas à pas sur l'historique. **Écart relatif** : écart moyen divisé par N/2 (0 % = parfait, environ 50 % = hasard). Le **meilleur N** est celui de plus forte réussite, puis de plus petit écart relatif.
+- **Exporter en CSV…** enregistre la synthèse puis tout le détail (s'ouvre dans Excel).
+- Double-clic sur une ligne : la colonne s'ouvre dans la vue principale avec ce N (pour la synthèse : le meilleur N).
+
+Exemples : `exemple_colonnes.csv` et `exemple_modulos.csv` (quatre suites construites avec des modulos différents : avec des plages de N, le programme retrouve 50, 37 et 43).
 
 ## Valeur cible (prédiction future)
 Onglet **Valeur cible** : saisissez le nombre que vous attendez puis **Vérifier**. Pour chaque modèle, le programme indique :
@@ -59,4 +68,4 @@ Ou automatiquement : à chaque envoi sur `main`, le workflow `.github/workflows/
 ## Fichiers
 - `modulo49.py` : interface graphique · `moteur.py` : calculs et lecture CSV
 - `modulo49.spec` : configuration PyInstaller · `installateur.iss` : script Inno Setup
-- `construire.bat` : construction en un clic · `exemple.csv` : données de test
+- `construire.bat` : construction en un clic · `exemple.csv`, `exemple_colonnes.csv`, `exemple_modulos.csv` : données de test

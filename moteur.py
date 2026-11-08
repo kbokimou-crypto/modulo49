@@ -45,13 +45,10 @@ def ecart_circulaire(a, b, n=MODULO_DEFAUT):
 
 def deplier(valeurs, n=MODULO_DEFAUT):
     """Transforme la suite brute en courbe continue (sauts ramenés dans ]-N/2, N/2])."""
-    out = [float(valeurs[0])]
-    for prec, cour in zip(valeurs, valeurs[1:]):
-        saut = (cour - prec) % n
-        if saut > n // 2:
-            saut -= n
-        out.append(out[-1] + saut)
-    return np.array(out)
+    v = np.asarray(valeurs, dtype=np.int64)
+    sauts = np.diff(v) % n
+    sauts[sauts > n // 2] -= n
+    return float(v[0]) + np.concatenate(([0.0], np.cumsum(sauts, dtype=np.float64)))
 
 
 # --------------------------------------------------------------------------- modèles
@@ -119,26 +116,34 @@ MODELES = [
 ]
 
 
-def _predire(fonction, valeurs, n):
-    """Prédiction brute d'un modèle sur une suite, ou None si le calcul échoue."""
+def _predire(fonction, y):
+    """Prédiction brute d'un modèle sur une courbe dépliée, ou None si le calcul échoue."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            _, p = fonction(deplier(valeurs, n))
+            _, p = fonction(y)
     except (np.linalg.LinAlgError, ValueError):
         return None
     return p if np.isfinite(p) else None
 
 
 def evaluer(fonction, valeurs, minimum, n=MODULO_DEFAUT):
-    """Erreur moyenne (sur le cycle) des prédictions faites pas à pas sur l'historique."""
+    """Validation pas à pas sur l'historique.
+
+    Renvoie (écart moyen sur le cycle, nombre de tests, nombre de prédictions exactes).
+    Le dépliage d'un début de suite étant le début du dépliage complet, on ne déplie
+    qu'une fois.
+    """
+    y = deplier(valeurs, n)
     erreurs = []
     debut = max(minimum, 3)
     for k in range(debut, len(valeurs)):
-        p = _predire(fonction, valeurs[:k], n)
+        p = _predire(fonction, y[:k])
         if p is not None:
             erreurs.append(ecart_circulaire(reduire(p, n), valeurs[k], n))
-    return (float(np.mean(erreurs)), len(erreurs)) if erreurs else (float("nan"), 0)
+    if not erreurs:
+        return float("nan"), 0, 0
+    return float(np.mean(erreurs)), len(erreurs), erreurs.count(0)
 
 
 def analyser(valeurs, n=MODULO_DEFAUT):
@@ -164,7 +169,7 @@ def analyser(valeurs, n=MODULO_DEFAUT):
             continue
         if not np.isfinite(p):
             continue
-        erreur, nb = evaluer(fonction, valeurs, minimum, n)
+        erreur, nb, exactes = evaluer(fonction, valeurs, minimum, n)
         resultats.append({
             "nom": nom,
             "ajustement": ajust,
@@ -172,6 +177,8 @@ def analyser(valeurs, n=MODULO_DEFAUT):
             "prediction": reduire(p, n),
             "erreur": erreur,
             "nb_tests": nb,
+            # part des prédictions exactes lors de la validation pas à pas (0 à 1)
+            "reussite": exactes / nb if nb else float("nan"),
         })
     if not resultats:
         raise ValueError("Aucun modèle n'a pu être ajusté sur ces données.")
@@ -193,6 +200,7 @@ def chercher_cible(valeurs, cible, n=MODULO_DEFAUT):
     if not 1 <= cible <= n - 1:
         raise ValueError(f"La valeur cible doit être entre 1 et {n - 1}.")
     total = len(valeurs)
+    y = deplier(valeurs, n)
     resultats = []
     for nom, fonction, minimum in MODELES:
         debut = max(minimum, 3)
@@ -200,7 +208,8 @@ def chercher_cible(valeurs, cible, n=MODULO_DEFAUT):
             continue
         fenetres, plus_proche, predictions = [], None, {}
         for k in range(debut, total + 1):
-            p = _predire(fonction, valeurs[-k:], n)
+            # dépliage des k dernières valeurs = fin du dépliage complet, recalée sur u(-k)
+            p = _predire(fonction, y[-k:] - y[-k] + valeurs[-k])
             if p is None:
                 continue
             pred = reduire(p, n)
@@ -386,81 +395,211 @@ def lire_csv(chemin):
 
 
 # --------------------------------------------------------------------------- multi-colonnes
-def analyser_colonnes(colonnes, n=MODULO_DEFAUT, cible=None):
-    """Lance l'analyse (et la recherche de cible si fournie) sur chaque colonne."""
-    lignes = []
-    for nom, valeurs in colonnes:
-        ligne = {"colonne": nom, "nb": len(valeurs),
-                 "derniere": valeurs[-1] if valeurs else None, "erreur": None}
-        try:
-            a = analyser(valeurs, n)
-        except ValueError as e:
-            ligne["erreur"] = str(e)
-            lignes.append(ligne)
-            continue
-        m = a["meilleur"]
-        preds = {r["nom"]: r["prediction"] for r in a["modeles"]}
-        compte = {}
-        for p in preds.values():
-            compte[p] = compte.get(p, 0) + 1
-        majo = max(compte.items(), key=lambda kv: (kv[1], kv[0] == m["prediction"]))
-        ligne.update({
-            "valeurs": valeurs,
-            "analyse": a,
-            "prediction": m["prediction"],
-            "modele": m["nom"],
-            "brut": m["prediction_brute"],
-            "ecart": m["erreur"] if m["nb_tests"] else None,
-            "predictions": preds,
-            "majoritaire": majo[0],
-            "nb_majoritaire": majo[1],
-        })
-        if cible is not None:
+# Chaque colonne a son propre réglage du modulo :
+#   {"mode": "fixe", "n": 50}                    -> un seul N
+#   {"mode": "plage", "n_min": 40, "n_max": 60}  -> tous les N de 40 à 60 (inclus)
+
+def modulos_a_tester(reglage):
+    """Liste des N à calculer pour un réglage de colonne (vérifie les bornes)."""
+    if reglage["mode"] == "fixe":
+        return [verifier_modulo(reglage["n"])]
+    n_min, n_max = verifier_modulo(reglage["n_min"]), verifier_modulo(reglage["n_max"])
+    if n_min > n_max:
+        raise ValueError(f"N min ({n_min}) doit être inférieur ou égal à N max ({n_max}).")
+    return list(range(n_min, n_max + 1))
+
+
+def decrire_reglage(reglage):
+    if reglage["mode"] == "fixe":
+        return f"fixe {reglage['n']}"
+    return f"plage {reglage['n_min']} à {reglage['n_max']}"
+
+
+def _pourcent(x):
+    return None if x is None or not np.isfinite(x) else 100.0 * x
+
+
+def analyser_ligne(nom, valeurs, n, cible=None):
+    """Calcul d'une colonne pour un modulo N donné : une ligne du tableau de détail."""
+    ligne = {"colonne": nom, "n": n, "nb": len(valeurs), "valeurs": valeurs,
+             "derniere": valeurs[-1] if valeurs else None, "erreur": None}
+    try:
+        a = analyser(valeurs, n)
+    except ValueError as e:
+        ligne["erreur"] = str(e)
+        return ligne
+    m = a["meilleur"]
+    preds = {r["nom"]: r["prediction"] for r in a["modeles"]}
+    compte = {}
+    for p in preds.values():
+        compte[p] = compte.get(p, 0) + 1
+    majo = max(compte.items(), key=lambda kv: (kv[1], kv[0] == m["prediction"]))
+    teste = m["nb_tests"] > 0
+    ligne.update({
+        "prediction": m["prediction"],
+        "modele": m["nom"],
+        "brut": m["prediction_brute"],
+        "ecart": m["erreur"] if teste else None,
+        # écart rapporté à l'écart maximal possible N/2 : 0 % = parfait, ~50 % = hasard
+        "ecart_relatif": _pourcent(m["erreur"] / (n / 2)) if teste else None,
+        "reussite": _pourcent(m["reussite"]) if teste else None,
+        "predictions": preds,
+        "majoritaire": majo[0],
+        "nb_majoritaire": majo[1],
+    })
+    if cible is not None:
+        if 1 <= cible <= n - 1:
             res = chercher_cible(valeurs, cible, n)
             rc = recapituler(res, len(valeurs))
             ligne.update({
-                "cible_resultats": res,
                 "nb_confirmants": rc["nb_confirmants"],
                 "confirmants": [r["nom"] for r in res if r["confirme"]],
-                "accord_max": rc["accord_max"],
                 "k_accord_max": rc["k_accord_max"],
                 "k_communs": rc["k_communs_a_tous"],
             })
-        lignes.append(ligne)
-    return lignes
+        else:
+            ligne["nb_confirmants"] = None  # cible hors de 1..N-1 pour ce N
+    return ligne
 
 
-def exporter_colonnes_csv(chemin, lignes, n, cible=None):
-    """Exporte les résultats de toutes les colonnes (séparateur ;, pour Excel)."""
+def _score(ligne):
+    """Classement des N d'une colonne : meilleure réussite, puis plus petit écart relatif."""
+    reussite = ligne["reussite"] if ligne["reussite"] is not None else -1.0
+    ecart = ligne["ecart_relatif"] if ligne["ecart_relatif"] is not None else 101.0
+    return (-reussite, ecart, ligne["n"])
+
+
+def synthetiser(nom, valeurs, reglage, modulos, lignes, cible=None):
+    """Résumé d'une colonne sur tous les N calculés."""
+    ok = [l for l in lignes if not l["erreur"]]
+    ignores = [n for n in modulos if valeurs and n <= max(valeurs)]
+    s = {"colonne": nom, "nb": len(valeurs), "derniere": valeurs[-1] if valeurs else None,
+         "valeurs": valeurs, "reglage": decrire_reglage(reglage), "modulos": modulos,
+         "testes": [l["n"] for l in ok], "ignores": ignores, "erreur": None, "meilleure": None}
+    if not ok:
+        if len(valeurs) < 3:
+            s["erreur"] = "Il faut au moins 3 nombres pour modéliser la suite."
+        elif ignores and len(ignores) == len(modulos):
+            s["erreur"] = f"Aucun N calculable : la valeur maximale est {max(valeurs)}, il faut N ≥ {max(valeurs) + 1}."
+        else:
+            s["erreur"] = lignes[0]["erreur"] if lignes else "Calcul interrompu."
+        return s
+    meilleure = min(ok, key=_score)
+    meilleure["est_meilleure"] = True
+    compte = {}
+    for l in ok:
+        compte[l["prediction"]] = compte.get(l["prediction"], 0) + 1
+    freq = max(compte.items(), key=lambda kv: (kv[1], kv[0] == meilleure["prediction"]))
+    s.update({"meilleure": meilleure, "frequente": freq[0], "nb_frequente": freq[1]})
+    if cible is not None:
+        avec = [l for l in ok if l.get("nb_confirmants")]
+        maxi = max((l["nb_confirmants"] for l in avec), default=0)
+        s.update({
+            "n_confirment": [l["n"] for l in avec],
+            "accord_max": maxi,
+            "n_accord_max": [l["n"] for l in avec if l["nb_confirmants"] == maxi],
+        })
+    return s
+
+
+def analyser_colonnes(colonnes, reglages, cible=None, rappel=None):
+    """Calcule toutes les colonnes, chacune avec son propre réglage du modulo.
+
+    colonnes : liste de (nom, valeurs) ; reglages : un réglage par colonne.
+    rappel(fait, total) est appelé après chaque N ; s'il renvoie False le calcul s'arrête.
+    Renvoie (synthese, details, complet). Les N trop petits pour les valeurs de la
+    colonne (N ≤ valeur maximale) ne sont pas calculés et sont signalés dans la synthèse.
+    """
+    listes = [modulos_a_tester(r) for r in reglages]
+    total = sum(len(l) for l in listes)
+    fait, complet = 0, True
+    synthese, details = [], []
+    for (nom, valeurs), reglage, modulos in zip(colonnes, reglages, listes):
+        if not complet:
+            s = synthetiser(nom, valeurs, reglage, modulos, [], cible)
+            s["erreur"] = "Non calculée : calcul arrêté avant cette colonne."
+            synthese.append(s)
+            continue
+        lignes = []
+        for n in modulos:
+            if len(valeurs) >= 3 and n > max(valeurs):
+                lignes.append(analyser_ligne(nom, valeurs, n, cible))
+            fait += 1
+            if rappel is not None and rappel(fait, total) is False:
+                complet = False
+                break
+        details.extend(lignes)
+        synthese.append(synthetiser(nom, valeurs, reglage, modulos, lignes, cible))
+    return synthese, details, complet
+
+
+def _nombre_fr(x, decimales=2):
+    return "" if x is None else f"{x:.{decimales}f}".replace(".", ",")
+
+
+def exporter_colonnes_csv(chemin, synthese, details, cible=None, complet=True):
+    """Exporte la synthèse par colonne puis le détail par N (séparateur ;, pour Excel)."""
     noms_modeles = [nom for nom, _, _ in MODELES]
     with open(chemin, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
         w.writerow(["Analyse multi-colonnes Modulo49"])
-        w.writerow(["Modulo N", n])
         w.writerow(["Valeur cible", cible if cible is not None else "aucune"])
+        if not complet:
+            w.writerow(["Attention", "calcul interrompu : résultats partiels"])
+        w.writerow(["Réussite", "part des prédictions exactes en validation pas à pas"])
+        w.writerow(["Écart relatif", "écart moyen / (N/2) : 0 % = parfait, environ 50 % = hasard"])
+        w.writerow(["Meilleur N", "plus forte réussite, puis plus petit écart relatif"])
         w.writerow([])
-        entete = ["Colonne", "Nb de valeurs", "Dernière valeur", "Prédiction retenue",
-                  "Modèle retenu", "Valeur brute", "Écart moyen",
-                  "Prédiction majoritaire", "Nb de modèles d'accord"]
+
+        w.writerow(["SYNTHÈSE PAR COLONNE"])
+        entete = ["Colonne", "Nb de valeurs", "Dernière valeur", "Modulo demandé",
+                  "Nb de N calculés", "N calculés", "N ignorés (trop petits)", "Meilleur N",
+                  "Prédiction au meilleur N", "Modèle retenu", "Réussite (%)",
+                  "Écart relatif (%)", "Prédiction la plus fréquente (tous N)",
+                  "Nb de N qui la donnent"]
+        if cible is not None:
+            entete += ["N où la cible est confirmée", "Accord maximal (modèles)",
+                       "N de l'accord maximal"]
+        w.writerow(entete + ["Erreur"])
+        for s in synthese:
+            debut = [s["colonne"], s["nb"], s["derniere"], s["reglage"], len(s["testes"]),
+                     resumer_fenetres(s["testes"]), resumer_fenetres(s["ignores"])]
+            if s["erreur"]:
+                w.writerow(debut + [""] * (len(entete) - len(debut)) + [s["erreur"]])
+                continue
+            m = s["meilleure"]
+            ligne = debut + [m["n"], m["prediction"], m["modele"], _nombre_fr(m["reussite"], 1),
+                             _nombre_fr(m["ecart_relatif"], 1), s["frequente"], s["nb_frequente"]]
+            if cible is not None:
+                ligne += [resumer_fenetres(s["n_confirment"]) or "aucun", s["accord_max"],
+                          resumer_fenetres(s["n_accord_max"]) or "aucun"]
+            w.writerow(ligne + [""])
+        w.writerow([])
+
+        w.writerow(["DÉTAIL PAR COLONNE ET PAR N"])
+        entete = ["Colonne", "N", "Meilleur N de la colonne", "Prédiction retenue",
+                  "Modèle retenu", "Valeur brute", "Écart moyen", "Écart relatif (%)",
+                  "Réussite (%)", "Prédiction majoritaire", "Nb de modèles d'accord"]
         if cible is not None:
             entete += ["Nb de modèles qui confirment la cible", "Modèles qui confirment",
-                       "Accord maximal (modèles)", "k de l'accord maximal",
-                       "k communs à tous les modèles qui confirment"]
+                       "k de l'accord maximal", "k communs à tous les modèles qui confirment"]
         entete += [f"Prédiction – {nom}" for nom in noms_modeles]
-        entete += ["Erreur"]
-        w.writerow(entete)
-        for l in lignes:
+        w.writerow(entete + ["Erreur"])
+        for l in details:
             if l["erreur"]:
-                ligne = [l["colonne"], l["nb"], l["derniere"]] + [""] * (len(entete) - 4)
-                w.writerow(ligne + [l["erreur"]])
+                debut = [l["colonne"], l["n"]]
+                w.writerow(debut + [""] * (len(entete) - len(debut)) + [l["erreur"]])
                 continue
-            ligne = [l["colonne"], l["nb"], l["derniere"], l["prediction"], l["modele"],
-                     f"{l['brut']:.2f}".replace(".", ","),
-                     "" if l["ecart"] is None else f"{l['ecart']:.2f}".replace(".", ","),
+            ligne = [l["colonne"], l["n"], "oui" if l.get("est_meilleure") else "",
+                     l["prediction"], l["modele"], _nombre_fr(l["brut"]), _nombre_fr(l["ecart"]),
+                     _nombre_fr(l["ecart_relatif"], 1), _nombre_fr(l["reussite"], 1),
                      l["majoritaire"], l["nb_majoritaire"]]
             if cible is not None:
-                ligne += [l["nb_confirmants"], ", ".join(l["confirmants"]) or "aucun",
-                          l["accord_max"], resumer_fenetres(l["k_accord_max"]) or "aucun",
-                          resumer_fenetres(l["k_communs"]) or "aucun"]
+                if l["nb_confirmants"] is None:
+                    ligne += ["cible hors de 1 à N-1", "", "", ""]
+                else:
+                    ligne += [l["nb_confirmants"], ", ".join(l["confirmants"]) or "aucun",
+                              resumer_fenetres(l["k_accord_max"]) or "aucun",
+                              resumer_fenetres(l["k_communs"]) or "aucun"]
             ligne += [l["predictions"].get(nom, "") for nom in noms_modeles]
             w.writerow(ligne + [""])
