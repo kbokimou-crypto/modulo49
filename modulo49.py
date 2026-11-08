@@ -452,13 +452,13 @@ class FenetreRecap(tk.Toplevel):
 
 
 class FenetreMulti(tk.Toplevel):
-    """Calcul sur toutes les colonnes d'un CSV, avec un modulo fixe ou une plage de N
-    choisi colonne par colonne, et export CSV des résultats."""
+    """Calcul sur toutes les colonnes d'un CSV, avec des modulos N saisis librement
+    colonne par colonne, et export CSV des résultats."""
 
     ABREGES = ["Lin.", "Quad.", "Cub.", "Saut moy.", "Dern. saut", "Réc. 1", "Réc. 2"]
-    FIXE, PLAGE = "Fixe", "Plage min–max"
     LIMITE_AFFICHAGE = 5000      # lignes du détail affichées (l'export contient tout)
-    LARGEURS = (230, 130, 135, 85, 85, 85, 300)  # colonnes de la grille de réglage
+    LARGEURS = (230, 140, 330, 480)  # colonnes de la grille de réglage
+    AIDE = "ex. 50  ·  37, 43, 50  ·  40-60  ·  30-35, 50, 61"
 
     def __init__(self, parent, n, chemin=None):
         super().__init__(parent)
@@ -500,22 +500,25 @@ class FenetreMulti(tk.Toplevel):
         self.lbl_info.pack(fill="x")
 
         # --- réglage du modulo colonne par colonne
-        cadre = ttk.LabelFrame(self, text="Modulo par colonne : valeur fixe, ou plage de N "
-                                          "(chaque N de N min à N max est calculé)", padding=6)
+        cadre = ttk.LabelFrame(self, text="Modulo par colonne : saisissez librement les N à "
+                                          "calculer (valeurs séparées par des virgules, "
+                                          "a-b = tous les N de a à b)", padding=6)
         cadre.pack(fill="x", padx=8, pady=6)
         entete = ttk.Frame(cadre)
         entete.pack(fill="x")
         self._grille(entete)
-        for j, titre in enumerate(("Colonne", "Valeurs", "Mode", "N fixe", "N min", "N max",
-                                   "Calculs prévus")):
+        for j, titre in enumerate(("Colonne", "Valeurs", "N à calculer", "Calculs prévus")):
             ttk.Label(entete, text=titre, font=("Segoe UI", 9, "bold")).grid(
                 row=0, column=j, sticky="w", padx=2)
-        # ligne « toutes les colonnes » pour appliquer le même réglage partout
-        self.tout = self._variables(self.n_defaut, self.n_defaut, self.n_defaut + 10)
+        # ligne « toutes les colonnes » pour appliquer la même saisie partout
+        self.tout = tk.StringVar(value=str(self.n_defaut))
         ttk.Label(entete, text="Toutes les colonnes :").grid(row=1, column=0, sticky="w", padx=2)
         ttk.Button(entete, text="Appliquer à toutes ↓", command=self._appliquer_a_toutes).grid(
             row=1, column=1, sticky="w", padx=2)
-        self._widgets_reglage(entete, 1, self.tout)
+        ttk.Entry(entete, textvariable=self.tout, width=44).grid(row=1, column=2, sticky="w",
+                                                                  padx=2)
+        ttk.Label(entete, text=self.AIDE, foreground="#777").grid(row=1, column=3, sticky="w",
+                                                                  padx=2)
         ttk.Separator(cadre).pack(fill="x", pady=4)
 
         zone = ttk.Frame(cadre)
@@ -575,72 +578,52 @@ class FenetreMulti(tk.Toplevel):
         table.bind("<Double-1>", lambda e: self.ouvrir_ligne())
         return table
 
-    def _variables(self, n, n_min, n_max):
-        return {"mode": tk.StringVar(value=self.FIXE), "n": tk.StringVar(value=str(n)),
-                "n_min": tk.StringVar(value=str(n_min)), "n_max": tk.StringVar(value=str(n_max))}
-
-    def _widgets_reglage(self, cadre, ligne, v, maxi=None):
-        """Mode + N fixe + N min + N max (+ calculs prévus si maxi est donné)."""
-        ttk.Combobox(cadre, textvariable=v["mode"], values=(self.FIXE, self.PLAGE),
-                     state="readonly", width=15).grid(row=ligne, column=2, sticky="w", padx=2)
-        champs = {}
-        for j, cle in ((3, "n"), (4, "n_min"), (5, "n_max")):
-            champs[cle] = ttk.Spinbox(cadre, from_=moteur.MODULO_MIN, to=moteur.MODULO_MAX,
-                                      width=7, textvariable=v[cle])
-            champs[cle].grid(row=ligne, column=j, sticky="w", padx=2, pady=1)
-        info = None
-        if maxi is not None:
-            info = tk.Label(cadre, anchor="w")
-            info.grid(row=ligne, column=6, sticky="w", padx=2)
+    def _widgets_reglage(self, cadre, ligne, var, maxi):
+        """Champ de saisie libre des N + calculs prévus, mis à jour à chaque frappe."""
+        ttk.Entry(cadre, textvariable=var, width=44).grid(row=ligne, column=2, sticky="w",
+                                                          padx=2, pady=1)
+        info = tk.Label(cadre, anchor="w")
+        info.grid(row=ligne, column=3, sticky="w", padx=2)
 
         def maj(*_):
-            plage = v["mode"].get() == self.PLAGE
-            champs["n"].configure(state="disabled" if plage else "normal")
-            champs["n_min"].configure(state="normal" if plage else "disabled")
-            champs["n_max"].configure(state="normal" if plage else "disabled")
-            if info is not None:
-                texte, rouge = self._prevision(v, maxi)
-                info.configure(text=texte, fg="#b42318" if rouge else "#1f2328")
-                self._maj_total()
-        for var in v.values():
-            var.trace_add("write", maj)
+            texte, rouge = self._prevision(var.get(), maxi)
+            info.configure(text=texte, fg="#b42318" if rouge else "#1f2328")
+            self._maj_total()
+        var.trace_add("write", maj)
         maj()
 
-    def _reglage(self, v):
-        if v["mode"].get() == self.PLAGE:
-            return {"mode": "plage", "n_min": int(v["n_min"].get()), "n_max": int(v["n_max"].get())}
-        return {"mode": "fixe", "n": int(v["n"].get())}
-
-    def _prevision(self, v, maxi):
+    @staticmethod
+    def _prevision(saisie, maxi):
         """Texte « calculs prévus » d'une ligne, et s'il signale un problème."""
         try:
-            modulos = moteur.modulos_a_tester(self._reglage(v))
+            modulos = moteur.lire_modulos(saisie)
         except ValueError as e:
-            return (str(e) if "N min" in str(e) or "compris" in str(e)
-                    else "valeur de N invalide"), True
+            return str(e), True
         calculables = [n for n in modulos if n > maxi]
         if not calculables:
             return f"aucun N calculable : il faut N ≥ {maxi + 1}", True
-        texte = f"{len(calculables)} calcul(s) : N = {moteur.resumer_fenetres(calculables)}"
+        liste = moteur.resumer_fenetres(calculables)
+        if len(liste) > 60:
+            liste = liste[:57].rsplit(",", 1)[0] + ", …"
+        texte = f"{len(calculables)} calcul(s) : N = {liste}"
         if len(calculables) < len(modulos):
-            texte += f" (N ≤ {maxi} ignorés)"
+            texte += f"  ({len(modulos) - len(calculables)} N ≤ {maxi} ignoré(s))"
         return texte, False
 
     def _maj_total(self):
         if self._fil is not None or not self.lignes_reglage:
             return
         total = 0
-        for (_, valeurs), v in zip(self.colonnes, self.lignes_reglage):
+        for (_, valeurs), var in zip(self.colonnes, self.lignes_reglage):
             try:
-                total += sum(1 for n in moteur.modulos_a_tester(self._reglage(v)) if n > max(valeurs))
+                total += sum(1 for n in moteur.lire_modulos(var.get()) if n > max(valeurs))
             except ValueError:
                 pass
         self.lbl_prog.configure(text=f"{total} calcul(s) à faire au total.")
 
     def _appliquer_a_toutes(self):
-        for v in self.lignes_reglage:
-            for cle in v:
-                v[cle].set(self.tout[cle].get())
+        for var in self.lignes_reglage:
+            var.set(self.tout.get())
 
     def _remplir_reglages(self):
         for w in self.grille.winfo_children():
@@ -649,12 +632,12 @@ class FenetreMulti(tk.Toplevel):
         for i, (nom, valeurs) in enumerate(self.colonnes):
             maxi = max(valeurs)
             n = self.n_defaut if self.n_defaut > maxi else maxi + 1
-            v = self._variables(n, n, n + 10)
+            var = tk.StringVar(value=str(n))
             ttk.Label(self.grille, text=nom).grid(row=i, column=0, sticky="w", padx=2)
             ttk.Label(self.grille, text=f"{len(valeurs)} val., max {maxi}").grid(
                 row=i, column=1, sticky="w", padx=2)
-            self.lignes_reglage.append(v)
-            self._widgets_reglage(self.grille, i, v, maxi)
+            self.lignes_reglage.append(var)
+            self._widgets_reglage(self.grille, i, var, maxi)
         self._maj_total()
 
     # ------------------------------------------------------------------ actions
@@ -676,8 +659,8 @@ class FenetreMulti(tk.Toplevel):
         self.synthese, self.details = [], []
         self._remplir_tables()
         self._remplir_reglages()
-        self.lbl_info.configure(text=f"{self.fichier} : {len(self.colonnes)} colonne(s). Réglez le "
-                                     f"modulo de chaque colonne, puis « Calculer toutes les colonnes ».")
+        self.lbl_info.configure(text=f"{self.fichier} : {len(self.colonnes)} colonne(s). Saisissez "
+                                     f"les N de chaque colonne, puis « Calculer toutes les colonnes ».")
         if avert:
             extrait = "\n".join(avert[:15]) + ("\n…" if len(avert) > 15 else "")
             messagebox.showwarning(TITRE, f"{len(avert)} cellule(s) ignorée(s) :\n\n{extrait}",
@@ -701,17 +684,14 @@ class FenetreMulti(tk.Toplevel):
                                             "(elle doit aussi être inférieure à N).", parent=self)
                 return
         reglages = []
-        for (nom, _), v in zip(self.colonnes, self.lignes_reglage):
+        for (nom, _), var in zip(self.colonnes, self.lignes_reglage):
             try:
-                reglage = self._reglage(v)
-                moteur.modulos_a_tester(reglage)
+                moteur.lire_modulos(var.get())
             except ValueError as e:
-                messagebox.showerror(TITRE, f"Colonne {nom} : réglage du modulo invalide.\n{e}"
-                                     if "N min" in str(e) or "compris" in str(e) else
-                                     f"Colonne {nom} : N doit être un entier entre "
-                                     f"{moteur.MODULO_MIN} et {moteur.MODULO_MAX}.", parent=self)
+                messagebox.showerror(TITRE, f"Colonne {nom} : saisie des N invalide.\n{e}",
+                                     parent=self)
                 return
-            reglages.append(reglage)
+            reglages.append(var.get())
         self.cible = cible
         self._arret.clear()
         self._progression = (0, 1)
@@ -744,6 +724,8 @@ class FenetreMulti(tk.Toplevel):
             self._suivi = self.after(100, self._suivre)
             return
         self._fil, self._suivi = None, None
+        fait, total = self._progression
+        self.barre.configure(maximum=max(total, 1), value=fait)
         for b in (self.btn_calculer, self.btn_exporter, self.btn_charger):
             b.configure(state="normal")
         self.btn_arreter.configure(state="disabled")
@@ -771,7 +753,7 @@ class FenetreMulti(tk.Toplevel):
         noms = [nom for nom, _, _ in moteur.MODELES]
         c = self.cible
         # synthèse
-        cols = [("colonne", "Colonne", 200), ("reglage", "Modulo demandé", 125),
+        cols = [("colonne", "Colonne", 200), ("reglage", "N demandés", 160),
                 ("testes", "N calculés", 105), ("ignores", "N ignorés", 85),
                 ("meilleur", "Meilleur N", 80), ("pred", "Prédiction", 75),
                 ("modele", "Modèle retenu", 172), ("reussite", "Réussite", 68),

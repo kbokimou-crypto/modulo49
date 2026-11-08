@@ -16,12 +16,14 @@ Programme Windows qui modélise la fonction d'évolution d'une suite de nombres 
 ## Calcul sur plusieurs colonnes
 Bouton **Plusieurs colonnes…** (ou réponse « Oui » quand un CSV chargé contient plusieurs colonnes) : chaque colonne du fichier (A, B, C…) est une suite calculée séparément. Les colonnes peuvent avoir des longueurs différentes (les cellules vides sont ignorées) ; une ligne d'en-tête donne le nom des colonnes.
 
-### Modulo choisi colonne par colonne
-Pour chaque colonne, choisissez le **Mode** :
-- **Fixe** : un seul modulo, saisi dans **N fixe** ;
-- **Plage min–max** : saisissez **N min** et **N max** ; le programme fait le calcul pour **chaque N** de N min à N max (bornes incluses).
+### Modulo choisi colonne par colonne (saisie libre)
+Pour chaque colonne, tapez librement dans **N à calculer** les modulos voulus :
+- une seule valeur : `50` ;
+- plusieurs valeurs au choix : `37, 43, 50` (séparées par une virgule, un point-virgule ou un espace) ;
+- une plage : `40-60` (ou `40 à 60`) = tous les N de 40 à 60 ;
+- un mélange : `30-35, 50, 61, 70-72`.
 
-La ligne **Toutes les colonnes** + **Appliquer à toutes** recopie le même réglage sur toutes les colonnes. La colonne **Calculs prévus** indique, avant de lancer, combien de N seront calculés. Un N trop petit pour la colonne (N ≤ sa plus grande valeur) ne peut pas être utilisé : il est ignoré et signalé. Une barre de progression suit le calcul ; **Arrêter** l'interrompt en gardant les résultats déjà obtenus.
+La ligne **Toutes les colonnes** + **Appliquer à toutes** recopie la même saisie sur toutes les colonnes. La colonne **Calculs prévus** indique, pendant la frappe, les N qui seront calculés (ou l'erreur de saisie, en rouge). Un N trop petit pour la colonne (N ≤ sa plus grande valeur) ne peut pas être utilisé : il est ignoré et signalé. Une barre de progression suit le calcul ; **Arrêter** l'interrompt en gardant les résultats déjà obtenus.
 
 ### Résultats
 - Onglet **Synthèse par colonne** : N calculés, N ignorés, **meilleur N** de la colonne, sa prédiction et son modèle, réussite, écart relatif, prédiction **la plus fréquente** sur tous les N calculés. Avec une **valeur cible** (facultative) : les N pour lesquels au moins un modèle la confirme, et le N où le plus de modèles sont d'accord (colonnes en vert si la cible est confirmée).

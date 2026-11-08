@@ -16,6 +16,7 @@ Le modulo N est au choix (50 par défaut) ; les valeurs admises vont de 1 à N-1
 
 import csv
 import io
+import re
 import warnings
 
 import numpy as np
@@ -395,24 +396,47 @@ def lire_csv(chemin):
 
 
 # --------------------------------------------------------------------------- multi-colonnes
-# Chaque colonne a son propre réglage du modulo :
-#   {"mode": "fixe", "n": 50}                    -> un seul N
-#   {"mode": "plage", "n_min": 40, "n_max": 60}  -> tous les N de 40 à 60 (inclus)
+# Chaque colonne a sa propre liste de modulos N, saisie librement :
+#   « 50 »  « 37, 43, 50 »  « 40-60 »  « 30-35 ; 50 61 »  « 40 à 45, 52 »
+
+def lire_modulos(texte):
+    """Lit une saisie libre de modulos et renvoie la liste des N, triée et sans doublons.
+
+    Séparateurs : virgule, point-virgule ou espace. « a-b » (ou « a à b », « a..b »)
+    désigne tous les N de a à b.
+    """
+    t = str(texte).replace("–", "-").replace("—", "-").replace("..", "-")
+    t = re.sub(r"\s*(?:-|à|À)\s*", "-", t)
+    morceaux = [m for m in re.split(r"[,;\s]+", t) if m]
+    if not morceaux:
+        raise ValueError("Aucune valeur de N : saisissez par exemple 50, ou 37, 43, 50, ou 40-60.")
+    modulos = set()
+    for m in morceaux:
+        plage = re.fullmatch(r"(\d+)-(\d+)", m)
+        if plage:
+            a, b = sorted((int(plage.group(1)), int(plage.group(2))))
+        elif m.isdigit():
+            a = b = int(m)
+        else:
+            raise ValueError(f"« {m} » n'est pas compris : écrivez des entiers (ex. 50) "
+                             f"ou des plages (ex. 40-60).")
+        for n in (a, b):
+            if not MODULO_MIN <= n <= MODULO_MAX:
+                raise ValueError(f"N = {n} : le modulo doit être compris entre "
+                                 f"{MODULO_MIN} et {MODULO_MAX}.")
+        modulos.update(range(a, b + 1))
+    return sorted(modulos)
+
 
 def modulos_a_tester(reglage):
-    """Liste des N à calculer pour un réglage de colonne (vérifie les bornes)."""
-    if reglage["mode"] == "fixe":
-        return [verifier_modulo(reglage["n"])]
-    n_min, n_max = verifier_modulo(reglage["n_min"]), verifier_modulo(reglage["n_max"])
-    if n_min > n_max:
-        raise ValueError(f"N min ({n_min}) doit être inférieur ou égal à N max ({n_max}).")
-    return list(range(n_min, n_max + 1))
+    """Liste des N à calculer : saisie libre (texte) ou liste d'entiers."""
+    if isinstance(reglage, str):
+        return lire_modulos(reglage)
+    return lire_modulos(", ".join(str(n) for n in reglage))
 
 
 def decrire_reglage(reglage):
-    if reglage["mode"] == "fixe":
-        return f"fixe {reglage['n']}"
-    return f"plage {reglage['n_min']} à {reglage['n_max']}"
+    return resumer_fenetres(modulos_a_tester(reglage))
 
 
 def _pourcent(x):
@@ -505,7 +529,8 @@ def synthetiser(nom, valeurs, reglage, modulos, lignes, cible=None):
 def analyser_colonnes(colonnes, reglages, cible=None, rappel=None):
     """Calcule toutes les colonnes, chacune avec son propre réglage du modulo.
 
-    colonnes : liste de (nom, valeurs) ; reglages : un réglage par colonne.
+    colonnes : liste de (nom, valeurs) ; reglages : pour chaque colonne, la saisie libre
+    des N à calculer (ex. « 37, 43, 50 » ou « 40-60 ») ou une liste d'entiers.
     rappel(fait, total) est appelé après chaque N ; s'il renvoie False le calcul s'arrête.
     Renvoie (synthese, details, complet). Les N trop petits pour les valeurs de la
     colonne (N ≤ valeur maximale) ne sont pas calculés et sont signalés dans la synthèse.
@@ -552,7 +577,7 @@ def exporter_colonnes_csv(chemin, synthese, details, cible=None, complet=True):
         w.writerow([])
 
         w.writerow(["SYNTHÈSE PAR COLONNE"])
-        entete = ["Colonne", "Nb de valeurs", "Dernière valeur", "Modulo demandé",
+        entete = ["Colonne", "Nb de valeurs", "Dernière valeur", "N demandés",
                   "Nb de N calculés", "N calculés", "N ignorés (trop petits)", "Meilleur N",
                   "Prédiction au meilleur N", "Modèle retenu", "Réussite (%)",
                   "Écart relatif (%)", "Prédiction la plus fréquente (tous N)",
