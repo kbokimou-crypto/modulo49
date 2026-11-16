@@ -628,3 +628,387 @@ def exporter_colonnes_csv(chemin, synthese, details, cible=None, complet=True):
                               resumer_fenetres(l["k_communs"]) or "aucun"]
             ligne += [l["predictions"].get(nom, "") for nom in noms_modeles]
             w.writerow(ligne + [""])
+
+
+# --------------------------------------------------------------------------- modulo glissant
+# Chaque colonne est calculée pour tous les N de N min à N max (N, N+1, N+2…). Pour chaque N
+# on garde la valeur calculée par chaque modèle (avant arrondi, ramenée entre 0 et N) et la
+# prévision retenue. Avec une valeur future V, on cherche les N où un modèle donne V :
+# exactement de préférence (écart 0), sinon à l'écart toléré près (± 0,499 par défaut,
+# c'est-à-dire que l'arrondi de la valeur calculée donne V).
+
+TOLERANCE_DEFAUT = 0.499
+PRECISION_EXACTE = 0.0005   # écart affiché 0,000 : la valeur calculée vaut exactement V
+
+
+def lire_tolerance(texte):
+    """« 0,499 », « 0.499 » ou « ±0,499 » -> 0.499."""
+    t = str(texte).strip().replace(" ", "").replace(",", ".")
+    for prefixe in ("±", "+/-", "+-"):
+        if t.startswith(prefixe):
+            t = t[len(prefixe):]
+            break
+    try:
+        x = float(t)
+    except ValueError:
+        raise ValueError(f"Écart toléré « {texte} » non compris : écrivez par exemple 0,499.") from None
+    if not np.isfinite(x) or x < 0:
+        raise ValueError("L'écart toléré doit être un nombre positif ou nul (par exemple 0,499).")
+    return x
+
+
+def lire_reglage_glissant(texte_min, texte_max, texte_future=""):
+    """Lit N min et N max (dans n'importe quel ordre) et la valeur future (facultative).
+
+    Renvoie (N min, N max, valeur future ou None)."""
+    bornes = []
+    for texte, quoi in ((texte_min, "N min"), (texte_max, "N max")):
+        t = str(texte).strip()
+        if not re.fullmatch(r"[0-9]+", t):
+            raise ValueError(f"{quoi} : écrivez un nombre entier (par exemple 50).")
+        n = int(t)
+        if not MODULO_MIN <= n <= MODULO_MAX:
+            raise ValueError(f"{quoi} = {n} : le modulo doit être compris entre "
+                             f"{MODULO_MIN} et {MODULO_MAX}.")
+        bornes.append(n)
+    nmin, nmax = sorted(bornes)
+    t = str(texte_future).strip()
+    if not t:
+        return nmin, nmax, None
+    v = _nombre(t)
+    if v is None or not np.isfinite(v) or v != int(v) or v < 1:
+        raise ValueError(f"Valeur future « {t} » : écrivez un nombre entier positif (par exemple 23).")
+    return nmin, nmax, int(v)
+
+
+def ecart_modulo(x, cible, n):
+    """Écart signé entre x et la cible sur le cycle MOD N, compris entre -N/2 et N/2."""
+    return float((x - cible + n / 2) % n - n / 2)
+
+
+def valeur_modulo(x, n):
+    """Valeur calculée par un modèle, avant arrondi, ramenée entre 0 et N (3 décimales)."""
+    v = round(float(x) % n, 3)
+    return 0.0 if v >= n else v + 0.0
+
+
+def _analyser_memoire(valeurs, n, memoire):
+    """Même résultat que analyser(valeurs, n), mais les prédictions brutes sont gardées
+    dans « memoire » et réutilisées pour le N suivant quand la suite dépliée ne change pas
+    (c'est le cas de tous les N grands devant les sauts de la suite)."""
+    if len(valeurs) < 3:
+        raise ValueError("Il faut au moins 3 nombres pour modéliser la suite.")
+    n = verifier_modulo(n)
+    hors = [v for v in valeurs if not 1 <= v <= n - 1]
+    if hors:
+        raise ValueError(f"Avec N = {n}, les valeurs doivent être entre 1 et {n - 1}. "
+                         f"Valeur(s) hors intervalle : {', '.join(map(str, sorted(set(hors))[:10]))}. "
+                         f"Choisissez N ≥ {max(valeurs) + 1}.")
+    y = deplier(valeurs, n)
+    cle = y.tobytes()
+    if memoire.get("cle") != cle:
+        modeles = []
+        for nom, fonction, minimum in MODELES:
+            if len(valeurs) < minimum:
+                continue
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    ajust, p = fonction(y)
+            except (np.linalg.LinAlgError, ValueError):
+                continue
+            if not np.isfinite(p):
+                continue
+            # prédictions de la validation pas à pas (indépendantes de N à y égal)
+            pas = [(k, _predire(fonction, y[:k])) for k in range(max(minimum, 3), len(valeurs))]
+            modeles.append((nom, ajust, p, pas))
+        memoire.clear()
+        memoire.update(cle=cle, modeles=modeles)
+    resultats = []
+    for nom, ajust, p, pas in memoire["modeles"]:
+        erreurs = [ecart_circulaire(reduire(q, n), valeurs[k], n) for k, q in pas if q is not None]
+        nb = len(erreurs)
+        resultats.append({
+            "nom": nom,
+            "ajustement": ajust,
+            "prediction_brute": p,
+            "prediction": reduire(p, n),
+            "erreur": float(np.mean(erreurs)) if nb else float("nan"),
+            "nb_tests": nb,
+            "reussite": erreurs.count(0) / nb if nb else float("nan"),
+        })
+    if not resultats:
+        raise ValueError("Aucun modèle n'a pu être ajusté sur ces données.")
+    testes = [r for r in resultats if r["nb_tests"] > 0]
+    meilleur = min(testes, key=lambda r: r["erreur"]) if testes else resultats[0]
+    return {"valeurs": list(valeurs), "n": n, "deplie": y, "modeles": resultats, "meilleur": meilleur}
+
+
+def _ecart_classe(d):
+    """|écart| pour classer les résultats ; toutes les valeurs exactes sont à égalité."""
+    return 0.0 if abs(d) < PRECISION_EXACTE else abs(d)
+
+
+def calculer_modulo(nom, valeurs, n, future=None, tolerance=TOLERANCE_DEFAUT, memoire=None):
+    """Une ligne du modulo glissant : la colonne calculée avec le modulo N.
+
+    Les valeurs qui dépassent N-1 sont ramenées dans 1..N-1 par MOD N (le 0 devient 1).
+    future : valeur future cherchée (ou None). Un modèle la « donne » si sa valeur calculée
+    en est à moins de « tolerance » sur le cycle MOD N ; écart 0 = valeur exacte.
+    """
+    ligne = {"colonne": nom, "n": n, "valeurs": valeurs, "nb_modifiees": 0,
+             "future": future, "cible": None, "modeles": [], "trouves": [], "nb_exacts": 0,
+             "retenu_trouve": False, "exact": False, "plus_proche": None, "erreur": None}
+    if valeurs and max(valeurs) >= n:
+        reduites = [reduire(v, n) for v in valeurs]
+        ligne["nb_modifiees"] = sum(a != b for a, b in zip(valeurs, reduites))
+        ligne["valeurs"] = reduites
+    try:
+        a = _analyser_memoire(ligne["valeurs"], n, {} if memoire is None else memoire)
+    except ValueError as e:
+        ligne["erreur"] = str(e)
+        return ligne
+    m = a["meilleur"]
+    ligne.update({
+        "modele": m["nom"],
+        "prediction": m["prediction"],
+        "brut": m["prediction_brute"],
+        "valeur": valeur_modulo(m["prediction_brute"], n),
+        "reussite": _pourcent(m["reussite"]) if m["nb_tests"] else None,
+        "ecart_moyen": m["erreur"] if m["nb_tests"] else None,
+    })
+    # une valeur future ≥ N ne peut pas sortir : avec N, les valeurs vont de 1 à N-1
+    cible = future if future is not None and future < n else None
+    ligne["cible"] = cible
+    for r in a["modeles"]:
+        x = r["prediction_brute"]
+        e = {"nom": r["nom"], "brut": x, "valeur": valeur_modulo(x, n),
+             "prediction": r["prediction"],
+             "reussite": _pourcent(r["reussite"]) if r["nb_tests"] else None,
+             "retenu": r is m, "ecart": None, "trouve": False, "exact": False, "zero_un": False}
+        if cible is not None:
+            d, zero_un = ecart_modulo(x, cible, n), False
+            if cible == 1:  # une valeur calculée proche de 0 donne aussi 1 (le 0 devient 1)
+                d0 = ecart_modulo(x, 0, n)
+                if abs(d0) < abs(d):
+                    d, zero_un = d0, True
+            trouve = abs(d) <= tolerance + 1e-9
+            e.update(ecart=d, trouve=trouve, exact=trouve and abs(d) < PRECISION_EXACTE,
+                     zero_un=zero_un)
+        ligne["modeles"].append(e)
+    if cible is not None and ligne["modeles"]:
+        ligne["trouves"] = [e for e in ligne["modeles"] if e["trouve"]]
+        ligne["retenu_trouve"] = any(e["retenu"] for e in ligne["trouves"])
+        ligne["nb_exacts"] = sum(e["exact"] for e in ligne["trouves"])
+        ligne["exact"] = ligne["nb_exacts"] > 0
+        # à égalité (valeurs exactes), le modèle retenu puis l'ordre des modèles
+        ligne["plus_proche"] = min(ligne["modeles"], key=lambda e: (_ecart_classe(e["ecart"]),
+                                                                    not e["retenu"]))
+    return ligne
+
+
+def synthetiser_glissant(nom, valeurs, reglage, lignes, ignores=()):
+    """Résumé d'une colonne du modulo glissant : N calculés et N qui donnent la valeur future
+    (exacts d'abord, puis par écart croissant)."""
+    nmin, nmax, future = reglage
+    ok = [l for l in lignes if not l["erreur"]]
+    s = {"colonne": nom, "nb": len(valeurs), "derniere": valeurs[-1] if valeurs else None,
+         "maxi": max(valeurs) if valeurs else None, "nmin": nmin, "nmax": nmax,
+         "future": future, "lignes": ok, "calcules": [l["n"] for l in ok],
+         "ignores": list(ignores), "reduits": [l["n"] for l in ok if l["nb_modifiees"]],
+         "impossibles": [], "correspondances": [], "n_exacts": [], "n_trouves": [],
+         "n_retenu": [], "accord_max": 0, "n_accord_max": [], "plus_proche": None, "erreur": None}
+    if not ok:
+        if len(valeurs) < 3:
+            s["erreur"] = "Il faut au moins 3 nombres pour modéliser la suite."
+        elif ignores and len(ignores) == nmax - nmin + 1:
+            s["erreur"] = (f"Aucun N calculable : la valeur maximale est {max(valeurs)}, il faut "
+                           f"N ≥ {max(valeurs) + 1} (ou ramener les valeurs MOD N).")
+        else:
+            s["erreur"] = lignes[0]["erreur"] if lignes else "Calcul interrompu."
+        return s
+    if future is not None:
+        corresp = [(l, e) for l in ok for e in l["trouves"]]
+        # exacts d'abord (en tête, les N où le plus de modèles sont exacts), puis écart croissant
+        corresp.sort(key=lambda le: (not le[1]["exact"],
+                                     0.0 if le[1]["exact"] else abs(le[1]["ecart"]),
+                                     -le[0]["nb_exacts"], -len(le[0]["trouves"]), le[0]["n"]))
+        proches = [(l, l["plus_proche"]) for l in ok if l["plus_proche"] is not None]
+        accord = max((len(l["trouves"]) for l in ok), default=0)
+        s.update({
+            "impossibles": [l["n"] for l in ok if l["cible"] is None],
+            "correspondances": corresp,
+            "n_exacts": sorted({l["n"] for l, e in corresp if e["exact"]}),
+            "n_trouves": sorted({l["n"] for l, _ in corresp}),
+            "n_retenu": [l["n"] for l in ok if l["retenu_trouve"]],
+            # N où le plus grand nombre de modèles donnent la valeur future
+            "accord_max": accord,
+            "n_accord_max": [l["n"] for l in ok if accord and len(l["trouves"]) == accord],
+            "plus_proche": (min(proches, key=lambda le: _ecart_classe(le[1]["ecart"]))
+                            if proches else None),
+        })
+    return s
+
+
+def analyser_glissant(colonnes, reglages, tolerance=TOLERANCE_DEFAUT, reduire_donnees=True,
+                      rappel=None):
+    """Modulo glissant sur toutes les colonnes.
+
+    colonnes : liste de (nom, valeurs) ; reglages : pour chaque colonne
+    (N min, N max, valeur future ou None). Tous les N de N min à N max sont calculés.
+    Quand des valeurs de la colonne dépassent N-1, elles sont ramenées MOD N si
+    reduire_donnees est vrai ; sinon ce N est ignoré. rappel(fait, total) est appelé après
+    chaque N ; s'il renvoie False le calcul s'arrête. Renvoie (synthese, details, complet).
+    """
+    total = sum(nmax - nmin + 1 for nmin, nmax, _ in reglages)
+    fait, complet = 0, True
+    synthese, details = [], []
+    for (nom, valeurs), reglage in zip(colonnes, reglages):
+        nmin, nmax, future = reglage
+        if not complet:
+            s = synthetiser_glissant(nom, valeurs, reglage, [])
+            s["erreur"] = "Non calculée : calcul arrêté avant cette colonne."
+            synthese.append(s)
+            continue
+        lignes, ignores, memoire = [], [], {}
+        for n in range(nmin, nmax + 1):
+            if len(valeurs) >= 3:
+                if reduire_donnees or n > max(valeurs):
+                    lignes.append(calculer_modulo(nom, valeurs, n, future, tolerance, memoire))
+                else:
+                    ignores.append(n)
+            fait += 1
+            if rappel is not None and rappel(fait, total) is False:
+                complet = False
+                break
+        details.extend(lignes)
+        synthese.append(synthetiser_glissant(nom, valeurs, reglage, lignes, ignores))
+    return synthese, details, complet
+
+
+def ecart_fr(d):
+    """Écart signé à 3 décimales, « 0,000 » pour une valeur exacte."""
+    if d is None:
+        return ""
+    if abs(d) < PRECISION_EXACTE:
+        return "0,000"
+    return f"{d:+.3f}".replace(".", ",")
+
+
+def decrire_donnees(ligne):
+    """« telles quelles » ou « ramenées MOD N (k modifiées) »."""
+    k = ligne["nb_modifiees"]
+    return f"ramenées MOD {ligne['n']} ({k} modifiée{'s' if k > 1 else ''})" if k else "telles quelles"
+
+
+def remarque_glissant(ligne, entree=None):
+    """Remarques d'une ligne (ou d'une correspondance) du modulo glissant."""
+    notes = []
+    zero_un = entree["zero_un"] if entree is not None else any(e["zero_un"] for e in ligne["trouves"])
+    if zero_un:
+        notes.append("valeur calculée proche de 0 : le 0 devient 1")
+    if ligne["future"] is not None and ligne["cible"] is None and not ligne["erreur"]:
+        notes.append(f"{ligne['future']} impossible avec N = {ligne['n']} "
+                     f"(valeurs de 1 à {ligne['n'] - 1})")
+    return " ; ".join(notes)
+
+
+def exporter_glissant_csv(chemin, synthese, details, tolerance=TOLERANCE_DEFAUT,
+                          reduire_donnees=True, complet=True):
+    """Exporte le modulo glissant : synthèse par colonne, N qui donnent la valeur future,
+    puis toutes les valeurs par N (séparateur ;, pour Excel)."""
+    noms = [nom for nom, _, _ in MODELES]
+    tol = _nombre_fr(tolerance, 3)
+    avec_future = any(s["future"] is not None for s in synthese)
+    with open(chemin, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["Modulo glissant et valeur future – Modulo49"])
+        if not complet:
+            w.writerow(["Attention", "calcul interrompu : résultats partiels"])
+        w.writerow(["Écart toléré", f"± {tol}"])
+        w.writerow(["Valeurs supérieures à N-1", "ramenées MOD N (le 0 devient 1)"
+                    if reduire_donnees else "N non calculé"])
+        w.writerow(["Valeur calculée", "valeur du modèle avant arrondi, ramenée MOD N (entre 0 et N)"])
+        w.writerow(["Écart", "valeur calculée moins valeur future, sur le cycle MOD N ; "
+                             "0,000 = valeur exacte"])
+        w.writerow([])
+
+        w.writerow(["SYNTHÈSE PAR COLONNE"])
+        entete = ["Colonne", "Nb de valeurs", "Dernière valeur", "Valeur max", "N min", "N max",
+                  "Nb de N calculés", "N calculés", "N où les données sont ramenées MOD N",
+                  "N ignorés", "Valeur future", "N exacts", f"N à ± {tol} (tous modèles)",
+                  "N où le modèle retenu donne la valeur", "Accord maximal (modèles)",
+                  "N de l'accord maximal", "Nb de correspondances",
+                  "Meilleure correspondance : N", "Modèle", "Valeur calculée", "Écart",
+                  "Remarque", "Erreur"]
+        w.writerow(entete)
+        for s in synthese:
+            debut = [s["colonne"], s["nb"], s["derniere"], s["maxi"], s["nmin"], s["nmax"],
+                     len(s["calcules"]), resumer_fenetres(s["calcules"]),
+                     resumer_fenetres(s["reduits"]), resumer_fenetres(s["ignores"]),
+                     "" if s["future"] is None else s["future"]]
+            if s["erreur"]:
+                w.writerow(debut + [""] * (len(entete) - len(debut) - 1) + [s["erreur"]])
+                continue
+            if s["future"] is None:
+                w.writerow(debut + [""] * (len(entete) - len(debut)))
+                continue
+            ligne = debut + [resumer_fenetres(s["n_exacts"]) or "aucun",
+                             resumer_fenetres(s["n_trouves"]) or "aucun",
+                             resumer_fenetres(s["n_retenu"]) or "aucun",
+                             f"{s['accord_max']}/{len(MODELES)}",
+                             resumer_fenetres(s["n_accord_max"]) or "aucun",
+                             len(s["correspondances"])]
+            meilleure = s["correspondances"][0] if s["correspondances"] else s["plus_proche"]
+            if meilleure:
+                l, e = meilleure
+                ligne += [l["n"], e["nom"], _nombre_fr(e["valeur"], 3), ecart_fr(e["ecart"]),
+                          "" if s["correspondances"] else f"aucun N à ± {tol} : valeur la plus proche"]
+            else:
+                ligne += ["", "", "", "", f"{s['future']} impossible pour tous les N calculés"]
+            w.writerow(ligne + [""])
+        w.writerow([])
+
+        if avec_future:
+            w.writerow(["VALEUR FUTURE : N QUI LA DONNENT (exacts d'abord, puis écart croissant)"])
+            w.writerow(["Colonne", "N", "Modèle", "Valeur calculée", "Prévision MOD N",
+                        "Valeur future", "Écart", "Exacte", "Modèle retenu pour ce N",
+                        "Réussite du modèle (%)", "Données", "Remarque"])
+            for s in synthese:
+                for l, e in s["correspondances"]:
+                    w.writerow([l["colonne"], l["n"], e["nom"], _nombre_fr(e["valeur"], 3),
+                                e["prediction"], l["future"], ecart_fr(e["ecart"]),
+                                "oui" if e["exact"] else "non", "oui" if e["retenu"] else "non",
+                                _nombre_fr(e["reussite"], 1), decrire_donnees(l),
+                                remarque_glissant(l, e)])
+            w.writerow([])
+
+        w.writerow(["TOUTES LES VALEURS PAR N"])
+        entete = ["Colonne", "N", "Données", "Modèle retenu", "Prévision retenue",
+                  "Réussite (%)", "Écart moyen"]
+        entete += [f"Valeur calculée – {nom}" for nom in noms]
+        entete += [f"Prévision – {nom}" for nom in noms]
+        if avec_future:
+            entete += ["Valeur future", "Nb de modèles qui la donnent", "Modèles qui la donnent",
+                       "Plus petit écart", "Modèle le plus proche"]
+            entete += [f"Écart – {nom}" for nom in noms]
+        entete += ["Remarque"]
+        w.writerow(entete)
+        for l in details:
+            if l["erreur"]:
+                debut = [l["colonne"], l["n"]]
+                w.writerow(debut + [""] * (len(entete) - len(debut) - 1) + [l["erreur"]])
+                continue
+            par_nom = {e["nom"]: e for e in l["modeles"]}
+            ligne = [l["colonne"], l["n"], decrire_donnees(l), l["modele"], l["prediction"],
+                     _nombre_fr(l["reussite"], 1), _nombre_fr(l["ecart_moyen"])]
+            ligne += [_nombre_fr(par_nom[nom]["valeur"], 3) if nom in par_nom else "" for nom in noms]
+            ligne += [par_nom[nom]["prediction"] if nom in par_nom else "" for nom in noms]
+            if avec_future:
+                p = l["plus_proche"]
+                ligne += ["" if l["future"] is None else l["future"],
+                          len(l["trouves"]) if l["cible"] is not None else "",
+                          ", ".join(e["nom"] for e in l["trouves"]),
+                          ecart_fr(p["ecart"]) if p else "", p["nom"] if p else ""]
+                ligne += [ecart_fr(par_nom[nom]["ecart"]) if nom in par_nom else "" for nom in noms]
+            w.writerow(ligne + [remarque_glissant(l)])

@@ -34,6 +34,20 @@ La ligne **Toutes les colonnes** + **Appliquer à toutes** recopie la même sais
 
 Exemples : `exemple_colonnes.csv` et `exemple_modulos.csv` (quatre suites construites avec des modulos différents : avec des plages de N, le programme retrouve 50, 37 et 43).
 
+## Modulo glissant et valeur future
+Bouton **Modulo glissant…** (dans la fenêtre principale, sur le fichier déjà chargé, ou dans la fenêtre « Plusieurs colonnes ») : pour chaque colonne du CSV, on saisit :
+- **N min** et **N max** : la colonne est calculée pour **tous** les modulos de N min à N max (N, N+1, N+2…) ;
+- **Valeur future** (facultative) : la valeur attendue après la dernière valeur de la suite.
+
+La ligne **Toutes les colonnes** + **Appliquer à toutes** recopie les trois saisies sur toutes les colonnes ; **Calculs prévus** indique pendant la frappe ce qui sera calculé. Quand N est inférieur ou égal à une valeur de la colonne, les valeurs sont **ramenées MOD N** (le 0 devient 1) pour que chaque N demandé soit calculé ; décochez la case pour ignorer ces N à la place. Une valeur future ≥ N est impossible pour ce N (les valeurs vont de 1 à N-1) : c'est signalé.
+
+Résultats, en trois onglets :
+- **Valeur future : modulos trouvés** (une ligne par colonne) : les N où un modèle donne **exactement** la valeur future (★, écart 0,000), les N où un modèle la donne **à ±0,499 près** (✔), le meilleur résultat (exact d'abord, puis le plus petit écart), les N où c'est le modèle retenu qui la donne, et le N où le plus de modèles sont d'accord. En vert : colonne où la valeur future est retrouvée (fond vert : au moins une valeur exacte). Sans aucun N à ±0,499, la valeur la plus proche est indiquée.
+- **Valeur future : détail par modèle** : chaque modèle et chaque N qui donnent la valeur future, les exacts d'abord, puis par écart croissant.
+- **Toutes les valeurs par N** : pour chaque colonne et chaque N, la **valeur calculée par chacun des 7 modèles** (avant arrondi, ramenée MOD N, 3 décimales), le modèle retenu, sa prévision et sa réussite.
+
+L'**écart toléré** (0,499 par défaut) se règle en haut de la fenêtre : 0 = valeurs exactes seulement. L'écart est mesuré sur le cycle MOD N : une valeur calculée de 49,8 avec N = 50 est à 0,2 de 0 ; comme le 0 devient 1, elle donne 1. **Exporter en CSV…** enregistre la synthèse, les N trouvés et toutes les valeurs (s'ouvre dans Excel). Double-clic sur une ligne : la colonne s'ouvre dans la vue principale avec ce N et la valeur future comme valeur cible.
+
 ## Valeur cible (prédiction future)
 Onglet **Valeur cible** : saisissez le nombre que vous attendez puis **Vérifier**. Pour chaque modèle, le programme indique :
 - **Confirme** : oui si le modèle peut prédire cette cible ;

@@ -45,6 +45,8 @@ class Application(tk.Tk):
         ttk.Button(haut, text="Recalculer", command=self.recalculer).pack(side="left", padx=8)
         ttk.Button(haut, text="Plusieurs colonnes…",
                    command=lambda: self.ouvrir_multi()).pack(side="left")
+        ttk.Button(haut, text="Modulo glissant…",
+                   command=lambda: self.ouvrir_glissant()).pack(side="left", padx=(4, 0))
         self.lbl_fichier = ttk.Label(haut, text="Aucun fichier (nombres en colonne A)")
         self.lbl_fichier.pack(side="left", padx=10)
 
@@ -156,6 +158,12 @@ class Application(tk.Tk):
         n = self._modulo()
         if n is not None:
             FenetreMulti(self, n, chemin)
+
+    def ouvrir_glissant(self, chemin=None):
+        """Modulo glissant et valeur future, sur le fichier déjà chargé s'il y en a un."""
+        n = self._modulo()
+        if n is not None:
+            FenetreGlissant(self, n, chemin or self.fichier)
 
     def charger_valeurs(self, nom, valeurs, cible=None):
         """Affiche une colonne dans la vue principale (depuis la fenêtre multi-colonnes)."""
@@ -459,13 +467,16 @@ class FenetreMulti(tk.Toplevel):
     LIMITE_AFFICHAGE = 5000      # lignes du détail affichées (l'export contient tout)
     LARGEURS = (230, 140, 330, 480)  # colonnes de la grille de réglage
     AIDE = "ex. 50  ·  37, 43, 50  ·  40-60  ·  30-35, 50, 61"
+    GAUCHE = {"colonne", "modele", "reglage", "remarque", "confirme_n"}  # colonnes alignées à gauche
+    CONSIGNE = "Saisissez les N de chaque colonne, puis « Calculer toutes les colonnes »."
+    FICHIER_EXPORT = "resultats_colonnes.csv"
 
     def __init__(self, parent, n, chemin=None):
         super().__init__(parent)
         self.parent, self.n_defaut = parent, n
         self.colonnes, self.lignes_reglage = [], []
         self.synthese, self.details, self.complet, self.cible = [], [], True, None
-        self.fichier = ""
+        self.fichier, self.chemin = "", None
         self._fil, self._resultat, self._suivi = None, None, None
         self._arret = threading.Event()
         self._progression = (0, 0)
@@ -494,6 +505,8 @@ class FenetreMulti(tk.Toplevel):
         self.btn_arreter.pack(side="left")
         self.btn_exporter = ttk.Button(haut, text="Exporter en CSV…", command=self.exporter)
         self.btn_exporter.pack(side="left", padx=10)
+        ttk.Button(haut, text="Modulo glissant…", command=lambda: FenetreGlissant(
+            self.parent, self.n_defaut, self.chemin)).pack(side="left")
         self.lbl_info = ttk.Label(self, padding=(8, 0), justify="left",
                                   text="Chargez un CSV : chaque colonne (A, B, C…) est une suite "
                                        "calculée séparément, avec son propre modulo.")
@@ -520,27 +533,8 @@ class FenetreMulti(tk.Toplevel):
         ttk.Label(entete, text=self.AIDE, foreground="#777").grid(row=1, column=3, sticky="w",
                                                                   padx=2)
         ttk.Separator(cadre).pack(fill="x", pady=4)
-
-        zone = ttk.Frame(cadre)
-        zone.pack(fill="x")
-        self.canevas = tk.Canvas(zone, height=130, highlightthickness=0)
-        sb = ttk.Scrollbar(zone, orient="vertical", command=self.canevas.yview)
-        self.canevas.configure(yscrollcommand=sb.set)
-        self.canevas.pack(side="left", fill="x", expand=True)
-        sb.pack(side="right", fill="y")
-        self.grille = ttk.Frame(self.canevas)
-        self.canevas.create_window((0, 0), window=self.grille, anchor="nw")
-        self.grille.bind("<Configure>", lambda e: self.canevas.configure(
-            scrollregion=self.canevas.bbox("all")))
-        self._grille(self.grille)
-
-        # --- progression
-        prog = ttk.Frame(self, padding=(8, 0))
-        prog.pack(fill="x")
-        self.barre = ttk.Progressbar(prog, mode="determinate", length=300)
-        self.barre.pack(side="left")
-        self.lbl_prog = ttk.Label(prog, text="")
-        self.lbl_prog.pack(side="left", padx=8)
+        self._zone_reglages(cadre)
+        self._zone_progression()
 
         # --- résultats
         self.onglets = ttk.Notebook(self)
@@ -555,6 +549,29 @@ class FenetreMulti(tk.Toplevel):
             "  Double-clic = ouvrir. ★ = meilleur N de la colonne : plus forte réussite "
             "(prédictions exactes en validation pas à pas),\n  puis plus petit écart relatif "
             "(écart moyen / (N/2) : 0 % = parfait, environ 50 % = hasard).")).pack(side="left")
+
+    def _zone_reglages(self, cadre):
+        """Grille des réglages colonne par colonne, avec barre de défilement."""
+        zone = ttk.Frame(cadre)
+        zone.pack(fill="x")
+        self.canevas = tk.Canvas(zone, height=130, highlightthickness=0)
+        sb = ttk.Scrollbar(zone, orient="vertical", command=self.canevas.yview)
+        self.canevas.configure(yscrollcommand=sb.set)
+        self.canevas.pack(side="left", fill="x", expand=True)
+        sb.pack(side="right", fill="y")
+        self.grille = ttk.Frame(self.canevas)
+        self.canevas.create_window((0, 0), window=self.grille, anchor="nw")
+        self.grille.bind("<Configure>", lambda e: self.canevas.configure(
+            scrollregion=self.canevas.bbox("all")))
+        self._grille(self.grille)
+
+    def _zone_progression(self):
+        prog = ttk.Frame(self, padding=(8, 0))
+        prog.pack(fill="x")
+        self.barre = ttk.Progressbar(prog, mode="determinate", length=300)
+        self.barre.pack(side="left")
+        self.lbl_prog = ttk.Label(prog, text="")
+        self.lbl_prog.pack(side="left", padx=8)
 
     def _grille(self, cadre):
         for j, largeur in enumerate(self.LARGEURS):
@@ -655,12 +672,12 @@ class FenetreMulti(tk.Toplevel):
         except OSError as e:
             messagebox.showerror(TITRE, f"Impossible de lire le fichier :\n{e}", parent=self)
             return
-        self.fichier = os.path.basename(chemin)
+        self.fichier, self.chemin = os.path.basename(chemin), chemin
         self.synthese, self.details = [], []
         self._remplir_tables()
         self._remplir_reglages()
-        self.lbl_info.configure(text=f"{self.fichier} : {len(self.colonnes)} colonne(s). Saisissez "
-                                     f"les N de chaque colonne, puis « Calculer toutes les colonnes ».")
+        self.lbl_info.configure(text=f"{self.fichier} : {len(self.colonnes)} colonne(s). "
+                                     f"{self.CONSIGNE}")
         if avert:
             extrait = "\n".join(avert[:15]) + ("\n…" if len(avert) > 15 else "")
             messagebox.showwarning(TITRE, f"{len(avert)} cellule(s) ignorée(s) :\n\n{extrait}",
@@ -693,6 +710,11 @@ class FenetreMulti(tk.Toplevel):
                 return
             reglages.append(var.get())
         self.cible = cible
+        colonnes = list(self.colonnes)
+        self._lancer(lambda rappel: moteur.analyser_colonnes(colonnes, reglages, cible, rappel))
+
+    def _lancer(self, calcul):
+        """Exécute calcul(rappel) en arrière-plan ; la fenêtre reste utilisable (Arrêter)."""
         self._arret.clear()
         self._progression = (0, 1)
         self._resultat = None
@@ -700,7 +722,6 @@ class FenetreMulti(tk.Toplevel):
         for b in (self.btn_calculer, self.btn_exporter, self.btn_charger):
             b.configure(state="disabled")
         self.btn_arreter.configure(state="normal")
-        colonnes = list(self.colonnes)
 
         def rappel(fait, total):
             self._progression = (fait, total)
@@ -708,7 +729,7 @@ class FenetreMulti(tk.Toplevel):
 
         def travail():
             try:
-                self._resultat = moteur.analyser_colonnes(colonnes, reglages, cible, rappel)
+                self._resultat = calcul(rappel)
             except Exception as e:  # remonté à l'interface
                 self._resultat = e
 
@@ -745,8 +766,7 @@ class FenetreMulti(tk.Toplevel):
         for c, titre, largeur in colonnes:
             table.heading(c, text=titre)
             table.column(c, width=largeur, minwidth=40, stretch=False,
-                         anchor="w" if c in ("colonne", "modele", "reglage", "remarque", "confirme_n")
-                         else "center")
+                         anchor="w" if c in self.GAUCHE else "center")
 
     def _remplir_tables(self):
         pc = lambda x: "–" if x is None else f"{x:.0f} %"
@@ -854,22 +874,395 @@ class FenetreMulti(tk.Toplevel):
             return
         chemin = filedialog.asksaveasfilename(
             parent=self, title="Exporter les résultats", defaultextension=".csv",
-            initialfile="resultats_colonnes.csv", filetypes=[("CSV (Excel)", "*.csv")])
+            initialfile=self.FICHIER_EXPORT, filetypes=[("CSV (Excel)", "*.csv")])
         if not chemin:
             return
         try:
-            moteur.exporter_colonnes_csv(chemin, self.synthese, self.details, self.cible,
-                                         self.complet)
+            self._ecrire_export(chemin)
         except OSError as e:
             messagebox.showerror(TITRE, f"Export impossible :\n{e}", parent=self)
             return
         messagebox.showinfo(TITRE, f"Résultats exportés :\n{chemin}", parent=self)
+
+    def _ecrire_export(self, chemin):
+        moteur.exporter_colonnes_csv(chemin, self.synthese, self.details, self.cible, self.complet)
 
     def _fermer(self):
         self._arret.set()
         if self._suivi is not None:
             self.after_cancel(self._suivi)
         self.destroy()
+
+
+class FenetreGlissant(FenetreMulti):
+    """Modulo glissant : chaque colonne est calculée pour tous les N de N min à N max, avec la
+    valeur de chaque modèle ; recherche des modulos N qui donnent une valeur future."""
+
+    LARGEURS = (210, 120, 80, 80, 105, 520)
+    GAUCHE = FenetreMulti.GAUCHE | {"donnees", "exacts", "trouves", "retenu_n", "accord",
+                                    "meilleure"}
+    CONSIGNE = ("Indiquez N min, N max et, si vous le souhaitez, la valeur future de chaque "
+                "colonne, puis « Calculer ».")
+    FICHIER_EXPORT = "modulo_glissant.csv"
+    NOIR, ORANGE, ROUGE = "#1f2328", "#9a6700", "#b42318"
+
+    def __init__(self, parent, n, chemin=None):
+        super().__init__(parent, n, chemin)
+        self.title("Modulo49 – Modulo glissant et valeur future")
+        self.geometry("1280x780")
+
+    # ------------------------------------------------------------------ interface
+    def _construire(self):
+        self.tolerance, self.reduire_donnees = moteur.TOLERANCE_DEFAUT, True
+        self.correspondances, self._maj_lignes = [], []
+        haut = ttk.Frame(self, padding=8)
+        haut.pack(fill="x")
+        self.btn_charger = ttk.Button(haut, text="Charger un CSV…", command=self.charger)
+        self.btn_charger.pack(side="left")
+        ttk.Label(haut, text="Écart toléré ± :").pack(side="left", padx=(14, 2))
+        self.var_tol = tk.StringVar(value=moteur._nombre_fr(moteur.TOLERANCE_DEFAUT, 3))
+        ttk.Entry(haut, textvariable=self.var_tol, width=7).pack(side="left")
+        self.var_reduire = tk.BooleanVar(value=True)
+        ttk.Checkbutton(haut, text="Valeurs ≥ N ramenées MOD N (sinon ce N est ignoré)",
+                        variable=self.var_reduire, command=self._maj_previsions).pack(
+            side="left", padx=(12, 0))
+        self.btn_calculer = ttk.Button(haut, text="Calculer", command=self.calculer)
+        self.btn_calculer.pack(side="left", padx=(12, 4))
+        self.btn_arreter = ttk.Button(haut, text="Arrêter", command=self._arret.set,
+                                      state="disabled")
+        self.btn_arreter.pack(side="left")
+        self.btn_exporter = ttk.Button(haut, text="Exporter en CSV…", command=self.exporter)
+        self.btn_exporter.pack(side="left", padx=10)
+        self.lbl_info = ttk.Label(self, padding=(8, 0), justify="left", text=(
+            "Chargez un CSV : chaque colonne est calculée pour tous les modulos de N min à N max "
+            "(N, N+1, N+2…). Avec une valeur future, le programme cherche les N qui la donnent."))
+        self.lbl_info.pack(fill="x")
+
+        # --- réglages colonne par colonne : N min, N max, valeur future
+        cadre = ttk.LabelFrame(self, padding=6, text=(
+            "Modulo glissant par colonne : tous les N de N min à N max (pas de 1), et valeur "
+            "future à retrouver (facultative)"))
+        cadre.pack(fill="x", padx=8, pady=6)
+        entete = ttk.Frame(cadre)
+        entete.pack(fill="x")
+        self._grille(entete)
+        for j, titre in enumerate(("Colonne", "Valeurs", "N min", "N max", "Valeur future",
+                                   "Calculs prévus")):
+            ttk.Label(entete, text=titre, font=("Segoe UI", 9, "bold")).grid(
+                row=0, column=j, sticky="w", padx=2)
+        n = self.n_defaut
+        self.tout_min = tk.StringVar(value=str(n))
+        self.tout_max = tk.StringVar(value=str(min(n + 20, moteur.MODULO_MAX)))
+        self.tout_future = tk.StringVar(value=self.parent.var_cible.get().strip())
+        ttk.Label(entete, text="Toutes les colonnes :").grid(row=1, column=0, sticky="w", padx=2)
+        ttk.Button(entete, text="Appliquer à toutes ↓", command=self._appliquer_a_toutes).grid(
+            row=1, column=1, sticky="w", padx=2)
+        for j, (var, largeur) in enumerate(zip((self.tout_min, self.tout_max, self.tout_future),
+                                               (8, 8, 10))):
+            ttk.Entry(entete, textvariable=var, width=largeur).grid(row=1, column=2 + j,
+                                                                   sticky="w", padx=2)
+        ttk.Label(entete, foreground="#777", text="ex. N min 40, N max 60 · valeur future vide = "
+                                                  "pas de recherche").grid(row=1, column=5,
+                                                                          sticky="w", padx=2)
+        ttk.Separator(cadre).pack(fill="x", pady=4)
+        self._zone_reglages(cadre)
+        self._zone_progression()
+
+        # --- résultats
+        self.onglets = ttk.Notebook(self)
+        self.onglets.pack(fill="both", expand=True, padx=8, pady=6)
+        self.table_synthese = self._table(self.onglets, "Valeur future : modulos trouvés")
+        self.table_corresp = self._table(self.onglets, "Valeur future : détail par modèle")
+        self.table_detail = self._table(self.onglets, "Toutes les valeurs par N")
+        for table in (self.table_synthese, self.table_corresp, self.table_detail):
+            table.tag_configure("exact", background="#d3f0d9", foreground="#14532d")
+        bas = ttk.Frame(self, padding=(8, 0, 8, 8))
+        bas.pack(fill="x")
+        ttk.Button(bas, text="Ouvrir la ligne sélectionnée dans la vue principale",
+                   command=self.ouvrir_ligne).pack(side="left")
+        self.lbl_legende = ttk.Label(bas, foreground="#777", justify="left")
+        self.lbl_legende.pack(side="left")
+        self._maj_legende()
+
+    def _maj_legende(self):
+        tol = moteur._nombre_fr(self.tolerance, 3)
+        self.lbl_legende.configure(text=(
+            "  Double-clic = ouvrir. Valeur calculée = valeur du modèle avant arrondi, ramenée "
+            f"MOD N.\n  ★ = valeur future exacte (écart 0,000)  ·  ✔ = à ±{tol} près  ·  "
+            "fond vert = au moins un modèle exact."))
+
+    def _prevision_glissant(self, variables, maxi):
+        """Texte « calculs prévus » d'une ligne de réglage, et sa couleur."""
+        try:
+            nmin, nmax, future = moteur.lire_reglage_glissant(*(v.get() for v in variables))
+        except ValueError as e:
+            return str(e), self.ROUGE
+        reduire = self.var_reduire.get()
+        debut = nmin if reduire else max(nmin, maxi + 1)
+        if debut > nmax:
+            return (f"aucun N calculable : il faut N ≥ {maxi + 1} (ou cocher « Valeurs ≥ N "
+                    f"ramenées MOD N »)"), self.ROUGE
+        nb = nmax - debut + 1
+        texte = f"{nb} calcul{'s' if nb > 1 else ''} : N = {debut}" + (
+            f" à {nmax}" if nmax > debut else "")
+        if nmin <= maxi:
+            texte += (f" · si N ≤ {maxi} : valeurs ramenées MOD N" if reduire
+                      else f" · N ≤ {maxi} ignorés")
+        couleur = self.NOIR
+        if future is not None:
+            if future >= nmax:
+                texte += f" · {future} impossible : il faut N > {future}"
+                couleur = self.ORANGE
+            elif future >= debut:
+                texte += f" · {future} cherché si N > {future}"
+            else:
+                texte += f" · valeur future {future}"
+        return texte, couleur
+
+    def _maj_previsions(self):
+        for maj in self._maj_lignes:
+            maj()
+
+    def _maj_total(self):
+        if self._fil is not None or not self.lignes_reglage:
+            return
+        total = 0
+        for (_, valeurs), variables in zip(self.colonnes, self.lignes_reglage):
+            try:
+                nmin, nmax, _ = moteur.lire_reglage_glissant(*(v.get() for v in variables))
+            except ValueError:
+                continue
+            debut = nmin if self.var_reduire.get() else max(nmin, max(valeurs) + 1)
+            total += max(0, nmax - debut + 1)
+        self.lbl_prog.configure(text=f"{total} calcul(s) à faire au total.")
+
+    def _appliquer_a_toutes(self):
+        for variables in self.lignes_reglage:
+            for var, source in zip(variables, (self.tout_min, self.tout_max, self.tout_future)):
+                var.set(source.get())
+
+    def _remplir_reglages(self):
+        for w in self.grille.winfo_children():
+            w.destroy()
+        self.lignes_reglage, self._maj_lignes = [], []
+        future = self.tout_future.get().strip()
+        for i, (nom, valeurs) in enumerate(self.colonnes):
+            maxi = max(valeurs)
+            nmin = min(self.n_defaut if self.n_defaut > maxi else maxi + 1, moteur.MODULO_MAX)
+            variables = (tk.StringVar(value=str(nmin)),
+                         tk.StringVar(value=str(min(nmin + 20, moteur.MODULO_MAX))),
+                         tk.StringVar(value=future))
+            ttk.Label(self.grille, text=nom).grid(row=i, column=0, sticky="w", padx=2)
+            ttk.Label(self.grille, text=f"{len(valeurs)} val., max {maxi}").grid(
+                row=i, column=1, sticky="w", padx=2)
+            for j, (var, largeur) in enumerate(zip(variables, (8, 8, 10))):
+                ttk.Entry(self.grille, textvariable=var, width=largeur).grid(
+                    row=i, column=2 + j, sticky="w", padx=2, pady=1)
+            info = tk.Label(self.grille, anchor="w")
+            info.grid(row=i, column=5, sticky="w", padx=2)
+
+            def maj(*_, variables=variables, maxi=maxi, info=info):
+                texte, couleur = self._prevision_glissant(variables, maxi)
+                info.configure(text=texte, fg=couleur)
+                self._maj_total()
+            for var in variables:
+                var.trace_add("write", maj)
+            self.lignes_reglage.append(variables)
+            self._maj_lignes.append(maj)
+            maj()
+        self._maj_total()
+
+    # ------------------------------------------------------------------ actions
+    def calculer(self):
+        if self._fil is not None:
+            return
+        if not self.colonnes:
+            messagebox.showinfo(TITRE, "Chargez d'abord un fichier CSV.", parent=self)
+            return
+        try:
+            tolerance = moteur.lire_tolerance(self.var_tol.get())
+        except ValueError as e:
+            messagebox.showerror(TITRE, str(e), parent=self)
+            return
+        reglages = []
+        for (nom, _), variables in zip(self.colonnes, self.lignes_reglage):
+            try:
+                reglages.append(moteur.lire_reglage_glissant(*(v.get() for v in variables)))
+            except ValueError as e:
+                messagebox.showerror(TITRE, f"Colonne {nom} :\n{e}", parent=self)
+                return
+        total = sum(nmax - nmin + 1 for nmin, nmax, _ in reglages)
+        if total > 100000 and not messagebox.askyesno(
+                TITRE, f"{total} modulos N à calculer : le calcul peut être long et utiliser "
+                       f"beaucoup de mémoire (bouton « Arrêter » disponible).\n\nLancer quand même ?",
+                parent=self):
+            return
+        self.tolerance, self.reduire_donnees = tolerance, bool(self.var_reduire.get())
+        colonnes, reduire = list(self.colonnes), self.reduire_donnees
+        self._lancer(lambda rappel: moteur.analyser_glissant(colonnes, reglages, tolerance,
+                                                             reduire, rappel))
+
+    def _remplir_tables(self):
+        noms = [nom for nom, _, _ in moteur.MODELES]
+        abr = dict(zip(noms, self.ABREGES))
+        tol = moteur._nombre_fr(self.tolerance, 3)
+        pc = lambda x: "–" if x is None else f"{x:.0f} %"
+        fr3 = lambda x: moteur._nombre_fr(x, 3)
+        plages = lambda liste, vide="aucun": moteur.resumer_fenetres(liste) or vide
+        self._maj_legende()
+
+        # 1) synthèse par colonne : les modulos qui donnent la valeur future
+        cols = [("colonne", "Colonne", 200), ("future", "Valeur future", 95),
+                ("exacts", "N exacts ★", 140), ("trouves", f"N à ±{tol} ✔", 150),
+                ("meilleure", "Meilleur résultat", 340), ("retenu_n", "N (modèle retenu)", 140),
+                ("accord", "Meilleur accord", 165), ("calcules", "N calculés", 105),
+                ("remarque", "Remarque", 420)]
+        t = self.table_synthese
+        self._colonnes_table(t, cols)
+        t.delete(*t.get_children())
+        for i, s in enumerate(self.synthese):
+            debut = [s["colonne"], "–" if s["future"] is None else s["future"]]
+            calcules = plages(s["calcules"], "–")
+            if s["erreur"]:
+                t.insert("", "end", iid=str(i), tags=("erreur",), values=debut + ["–"] * 5 + [
+                    calcules, s["erreur"]])
+                continue
+            notes = []
+            if s["reduits"]:
+                notes.append(f"N = {plages(s['reduits'])} : données ramenées MOD N")
+            if s["ignores"]:
+                notes.append(f"N ignorés : {plages(s['ignores'])}")
+            if s["future"] is None:
+                notes.append("pas de valeur future : voir « Toutes les valeurs par N »")
+                t.insert("", "end", iid=str(i), values=debut + ["–"] * 5 + [
+                    calcules, " ; ".join(notes)])
+                continue
+            if s["impossibles"]:
+                notes.append(f"N = {plages(s['impossibles'])} trop petits pour {s['future']}")
+            if s["correspondances"]:
+                l, e = s["correspondances"][0]
+                meilleure = (f"N = {l['n']} · {e['nom']} : {fr3(e['valeur'])} "
+                             f"(écart {moteur.ecart_fr(e['ecart'])})")
+            elif s["plus_proche"]:
+                l, e = s["plus_proche"]
+                meilleure = (f"aucune · la plus proche : N = {l['n']}, {e['nom']} "
+                             f"{fr3(e['valeur'])} (écart {moteur.ecart_fr(e['ecart'])})")
+            else:
+                meilleure = "aucune"
+            accord = (f"{s['accord_max']}/{len(noms)} pour N = {plages(s['n_accord_max'])}"
+                      if s["accord_max"] else "–")
+            tags = ("exact",) if s["n_exacts"] else ("oui",) if s["n_trouves"] else ()
+            t.insert("", "end", iid=str(i), tags=tags, values=debut + [
+                plages(s["n_exacts"]), plages(s["n_trouves"]), meilleure, plages(s["n_retenu"]),
+                accord, calcules, " ; ".join(notes)])
+
+        # 2) détail des correspondances : exactes d'abord, puis par écart croissant
+        self.correspondances = [le for s in self.synthese for le in s["correspondances"]]
+        cols = [("colonne", "Colonne", 200), ("n", "N", 55), ("modele", "Modèle", 170),
+                ("valeur", "Valeur calculée", 112), ("pred", "Prévision", 72),
+                ("future", "Valeur future", 95), ("ecart", "Écart", 72), ("exact", "Exacte", 62),
+                ("retenu", "Retenu pour ce N", 125), ("reussite", "Réussite", 68),
+                ("donnees", "Données", 225), ("remarque", "Remarque", 300)]
+        t = self.table_corresp
+        self._colonnes_table(t, cols)
+        t.delete(*t.get_children())
+        for i, (l, e) in enumerate(self.correspondances[:self.LIMITE_AFFICHAGE]):
+            t.insert("", "end", iid=str(i), tags=("exact",) if e["exact"] else ("oui",), values=[
+                l["colonne"], l["n"], e["nom"], fr3(e["valeur"]), e["prediction"], l["future"],
+                moteur.ecart_fr(e["ecart"]), "oui ★" if e["exact"] else "non",
+                "oui" if e["retenu"] else "–", pc(e["reussite"]), moteur.decrire_donnees(l),
+                moteur.remarque_glissant(l, e)])
+
+        # 3) toutes les valeurs : chaque modèle, pour chaque N
+        avec_future = any(s["future"] is not None for s in self.synthese)
+        cols = [("colonne", "Colonne", 200), ("n", "N", 55), ("donnees", "Données", 150),
+                ("modele", "Retenu", 80), ("pred", "Prévision", 72), ("reussite", "Réussite", 68)]
+        cols += [(f"m{i}", abrege, 86) for i, abrege in enumerate(self.ABREGES[:len(noms)])]
+        if avec_future:
+            cols += [("future", "Valeur future", 95), ("proche", "Plus petit écart", 125)]
+        cols += [("remarque", "Remarque", 330)]
+        t = self.table_detail
+        self._colonnes_table(t, cols)
+        t.delete(*t.get_children())
+        for i, l in enumerate(self.details[:self.LIMITE_AFFICHAGE]):
+            if l["erreur"]:
+                t.insert("", "end", iid=str(i), tags=("erreur",),
+                         values=[l["colonne"], l["n"]] + ["–"] * (len(cols) - 3) + [l["erreur"]])
+                continue
+            par_nom = {e["nom"]: e for e in l["modeles"]}
+            vals = [l["colonne"], l["n"],
+                    f"MOD {l['n']} ({l['nb_modifiees']} modif.)" if l["nb_modifiees"]
+                    else "telles quelles", abr[l["modele"]], l["prediction"], pc(l["reussite"])]
+            for nom in noms:
+                e = par_nom.get(nom)
+                vals.append("–" if e is None else fr3(e["valeur"]) + (
+                    " ★" if e["exact"] else " ✔" if e["trouve"] else ""))
+            if avec_future:
+                p = l["plus_proche"]
+                if l["future"] is None:
+                    vals += ["–", "–"]
+                elif l["cible"] is None:
+                    vals += [l["future"], "impossible"]
+                else:
+                    vals += [l["future"], f"{moteur.ecart_fr(p['ecart'])} ({abr[p['nom']]})"]
+            remarque = moteur.remarque_glissant(l)
+            if l["trouves"]:
+                remarque = " ; ".join(x for x in (
+                    f"{len(l['trouves'])} modèle(s) donnent {l['future']}"
+                    + (f", dont {l['nb_exacts']} exact(s)" if l["nb_exacts"] else ""),
+                    remarque) if x)
+            tags = ("exact",) if l["exact"] else ("oui",) if l["trouves"] else ()
+            t.insert("", "end", iid=str(i), tags=tags, values=vals + [remarque])
+
+        trop = [nom for nom, liste in (("correspondances", self.correspondances),
+                                       ("toutes les valeurs", self.details))
+                if len(liste) > self.LIMITE_AFFICHAGE]
+        if trop:
+            self.lbl_prog.configure(text=self.lbl_prog.cget("text") + (
+                f" Tableau(x) {', '.join(trop)} : {self.LIMITE_AFFICHAGE} premières lignes "
+                f"affichées ; l'export CSV contient tout."))
+        if self.synthese:
+            nb_ok = sum(1 for s in self.synthese if not s["erreur"])
+            info = (f"{self.fichier} : {nb_ok}/{len(self.synthese)} colonne(s) calculée(s), "
+                    f"{len(self.details)} modulo(s) N au total.")
+            avec = [s for s in self.synthese if not s["erreur"] and s["future"] is not None]
+            if avec:
+                info += (f" Valeur future retrouvée à ±{tol} près dans "
+                         f"{sum(1 for s in avec if s['n_trouves'])}/{len(avec)} colonne(s), "
+                         f"dont {sum(1 for s in avec if s['n_exacts'])} avec une valeur exacte "
+                         f"(fond vert).")
+            self.lbl_info.configure(text=info)
+
+    def ouvrir_ligne(self):
+        onglet = self.onglets.index(self.onglets.select())
+        table = (self.table_synthese, self.table_corresp, self.table_detail)[onglet]
+        sel = table.selection()
+        if not sel:
+            messagebox.showinfo(TITRE, "Sélectionnez une ligne dans le tableau.", parent=self)
+            return
+        i = int(sel[0])
+        if onglet == 0:
+            s = self.synthese[i]
+            if s["erreur"]:
+                messagebox.showerror(TITRE, s["erreur"], parent=self)
+                return
+            # la meilleure correspondance, sinon la plus proche, sinon le premier N
+            ligne = (s["correspondances"][0][0] if s["correspondances"] else
+                     s["plus_proche"][0] if s["plus_proche"] else s["lignes"][0])
+        elif onglet == 1:
+            ligne = self.correspondances[i][0]
+        else:
+            ligne = self.details[i]
+        if ligne.get("erreur"):
+            messagebox.showerror(TITRE, ligne["erreur"], parent=self)
+            return
+        self.parent.var_n.set(str(ligne["n"]))
+        self.parent.charger_valeurs(f"{ligne['colonne']} (N = {ligne['n']})", ligne["valeurs"],
+                                    ligne["cible"])
+
+    def _ecrire_export(self, chemin):
+        moteur.exporter_glissant_csv(chemin, self.synthese, self.details, self.tolerance,
+                                     self.reduire_donnees, self.complet)
 
 
 def main():
